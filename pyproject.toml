@@ -1,0 +1,8 @@
+[project]
+name = "ragproject"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "docling>=2.140.0",
+    "langchain-docling>=3.0.0",
+]

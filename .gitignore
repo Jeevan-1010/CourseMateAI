@@ -1,0 +1,10 @@
+﻿.env
+.venv/
+__pycache__/
+*.py[cod]
+Chroma-db/
+vectorStore/
+.streamlit/secrets.toml
+
+# Study documents
+*.pdf
