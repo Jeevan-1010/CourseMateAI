@@ -8,3 +8,19 @@ vectorStore/
 
 # Study documents
 *.pdf
+.env
+.env.*
+!.env.example
+.venv/
+**/.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+Chroma-db/
+vectorStore/
+**/Chroma-db/
+**/vectorStore/
+.coursemate_cache/
+backend/uploads/
+*.pdf
+.streamlit/secrets.toml

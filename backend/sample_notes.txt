@@ -1,0 +1,16 @@
+Artificial Intelligence and Machine Learning
+
+Artificial Intelligence (AI) is a field of computer science that develops systems capable of tasks that normally require human intelligence.
+
+Machine Learning (ML) is a subset of AI. It allows computers to learn patterns from data rather than relying only on explicitly programmed rules.
+
+There are three main types of machine learning:
+1. Supervised learning uses labeled training data.
+2. Unsupervised learning discovers patterns in data without labels.
+3. Reinforcement learning learns through rewards and penalties.
+
+A neural network consists of interconnected neurons arranged in input, hidden, and output layers.
+
+Retrieval-Augmented Generation (RAG) combines document retrieval with a language model. Its six main stages are Load, Split, Embed, Store, Retrieve, and Generate.
+
+RAG helps students ask questions about their study materials and receive answers grounded in the information retrieved from their documents.
