@@ -13,9 +13,13 @@ The application is designed to answer from the selected document context and to 
 - Upload multiple study documents in PDF, TXT, and DOCX formats.
 - Extract text from uploaded documents.
 - Ask questions about a selected document using retrieval-augmented generation.
+- Maintain conversational context across follow-up questions within the current chat session.
+- Rewrite context-dependent follow-up questions into standalone retrieval queries before searching the document.
 - Generate study summaries from uploaded material.
 - Keep document embeddings in a persistent ChromaDB store.
 - Return source page or section references with question-answering responses.
+- Inspect the retrieved chunks, including their page numbers, text, and vector-search distances.
+- Measure retrieval, generation, and end-to-end question-answering latency.
 - Validate request bodies with Pydantic models and validate uploaded file types and sizes.
 
 ## Technology Stack
@@ -40,9 +44,10 @@ The application is designed to answer from the selected document context and to 
 3. **Chunk:** LangChain's `RecursiveCharacterTextSplitter` divides the text into chunks using a configured chunk size of 1,000 characters and an overlap of 200 characters.
 4. **Embed:** Sentence Transformers converts the chunks into numerical embeddings.
 5. **Store:** ChromaDB stores the embeddings, text, and document metadata persistently.
-6. **Retrieve:** The student's question is embedded with the same embedding model. ChromaDB similarity search retrieves the top 4 chunks.
-7. **Generate:** The retrieved context and question are passed to the Groq-hosted `openai/gpt-oss-20b` model. The prompt instructs the model to answer from the supplied context and not invent missing information.
-8. **Respond:** The generated answer and source page or section references are returned to the frontend.
+6. **Understand the conversation:** When prior messages are available, the backend uses them to rewrite a follow-up question as a standalone retrieval query. Conversation history is used to resolve references, not as factual evidence.
+7. **Retrieve:** ChromaDB similarity search retrieves the top 4 chunks using the standalone query (or the original question when there is no history). The backend records each retrieved chunk's page, text, and distance for diagnostics; no distance-based filtering threshold is currently applied.
+8. **Generate:** The retrieved context, latest question, and conversation history are passed to the Groq-hosted `openai/gpt-oss-20b` model. The prompt instructs the model to answer from the supplied document context and not invent missing information.
+9. **Respond:** The generated answer, retrieval query, retrieved chunks, source page or section references, and latency measurements are returned to the frontend.
 
 ### Architecture
 
@@ -91,9 +96,17 @@ Question answering:
 ```json
 {
   "filename": "lecture-notes.pdf",
-  "question": "What are the main concepts covered in this chapter?"
+  "question": "What are the main concepts covered in this chapter?",
+  "history": [
+    {"role": "user", "content": "What is a primary key?"},
+    {"role": "assistant", "content": "A primary key uniquely identifies each row in a table."}
+  ]
 }
 ```
+
+The `history` field is optional and defaults to an empty list. Each message must have a `role` of `user` or `assistant` and a `content` string. The frontend sends recent messages from the current chat session; the backend uses up to the latest 24 messages. Starting a new chat clears that conversation history. When history is supplied, the backend may make an additional model call to rewrite a follow-up question before retrieval.
+
+The `/ask` response includes `retrieval_query`, `retrieved_context` (page, text, and distance for each retrieved chunk), `source_pages_or_sections`, `retrieval_latency_ms`, `generation_latency_ms`, and `end_to_end_latency_ms`, in addition to the answer and filename. Retrieval distances are diagnostic information; the current implementation does not apply a distance threshold to filter chunks.
 
 Summarization:
 
