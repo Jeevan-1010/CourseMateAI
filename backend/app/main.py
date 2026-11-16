@@ -1,5 +1,6 @@
 
 import hashlib
+import time
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from typing import Literal
@@ -10,7 +11,6 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from docx import Document as WordDocument
-
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -96,7 +96,6 @@ def invalidate_document_index(filename: str) -> None:
     try:
         client.delete_collection(name=name)
     except Exception:
-        # The collection may not exist yet.
         pass
 
 
@@ -118,6 +117,7 @@ def load_document_pages(filename: str) -> list[dict]:
                 {"page": number, "text": page.extract_text() or ""}
                 for number, page in enumerate(reader.pages, start=1)
             ]
+
         except HTTPException:
             raise
         except Exception as error:
@@ -139,6 +139,7 @@ def load_document_pages(filename: str) -> list[dict]:
 
     try:
         word_document = WordDocument(str(path))
+
         paragraphs = [
             paragraph.text
             for paragraph in word_document.paragraphs
@@ -152,6 +153,7 @@ def load_document_pages(filename: str) -> list[dict]:
 
         text = "\n".join(paragraphs + tables)
         return [{"page": 1, "text": text}]
+
     except Exception as error:
         raise HTTPException(
             status_code=400,
@@ -167,12 +169,14 @@ def get_vectorstore(filename: str) -> Chroma:
 
     try:
         collection = client.get_collection(name=name)
+
         if collection.count() > 0:
             return Chroma(
                 client=client,
                 collection_name=name,
                 embedding_function=embeddings,
             )
+
     except Exception:
         pass
 
@@ -269,6 +273,8 @@ async def upload_document(file: UploadFile = File(...)):
             detail="The maximum file size is 20 MB.",
         )
 
+    temporary = UPLOAD_DIR / f".uploading_{filename}"
+
     try:
         if extension == ".pdf":
             if not content.startswith(b"%PDF-"):
@@ -292,24 +298,18 @@ async def upload_document(file: UploadFile = File(...)):
             content.decode("utf-8-sig")
 
         destination = UPLOAD_DIR / filename
-        temporary = UPLOAD_DIR / f".uploading_{filename}"
-
-        # Write and validate the replacement before replacing the old file.
         temporary.write_bytes(content)
 
         if extension == ".pdf":
             test_reader = PdfReader(str(temporary))
+
             if test_reader.is_encrypted:
-                temporary.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=400,
                     detail="Encrypted PDFs are not supported.",
                 )
 
-        # Replace an existing filename with the new upload.
         temporary.replace(destination)
-
-        # Remove old embeddings so the replacement is indexed afresh.
         invalidate_document_index(filename)
 
         pages = load_document_pages(filename)
@@ -326,11 +326,11 @@ async def upload_document(file: UploadFile = File(...)):
         }
 
     except HTTPException:
-        raise
-    except Exception as error:
-        temporary = UPLOAD_DIR / f".uploading_{filename}"
         temporary.unlink(missing_ok=True)
+        raise
 
+    except Exception as error:
+        temporary.unlink(missing_ok=True)
         raise HTTPException(
             status_code=400,
             detail=f"Could not process the upload: {type(error).__name__}",
@@ -351,6 +351,7 @@ def extract_document(filename: str):
 
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
+    request_start = time.perf_counter()
     question = request.question.strip()
 
     if not question:
@@ -404,7 +405,28 @@ def ask_question(request: QuestionRequest):
             retrieval_query = rewritten.content.strip() or question
 
         vectorstore = get_vectorstore(request.filename)
-        matches = vectorstore.similarity_search(retrieval_query, k=4)
+        retrieval_start = time.perf_counter()
+
+        # Retrieve four chunks using the rewritten query and collect distances.
+        scored_matches = vectorstore.similarity_search_with_score(
+            retrieval_query,
+            k=4,
+        )
+
+        retrieval_latency_ms = (
+            time.perf_counter() - retrieval_start
+        ) * 1000
+
+        # Diagnostic output only: no filtering is applied yet.
+        print("\nRetrieval scores for:", retrieval_query)
+
+        for doc, score in scored_matches:
+            print(
+                f"Page: {doc.metadata.get('page', 0) + 1}, "
+                f"Distance: {score:.4f}"
+            )
+
+        matches = [doc for doc, score in scored_matches]
 
         if not matches:
             raise HTTPException(
@@ -439,30 +461,52 @@ def ask_question(request: QuestionRequest):
             ),
         ])
 
+        generation_start = time.perf_counter()
+
         response = (prompt | model).invoke({
             "chat_history": chat_history,
             "context": context,
             "question": question,
         })
 
+        generation_latency_ms = (
+            time.perf_counter() - generation_start
+        ) * 1000
+
         source_sections = sorted({
             doc.metadata.get("page", 0) + 1
             for doc in matches
         })
+
+        end_to_end_latency_ms = (
+            time.perf_counter() - request_start
+        ) * 1000
 
         return {
             "filename": request.filename,
             "question": question,
             "retrieval_query": retrieval_query,
             "answer": response.content,
+            "retrieved_context": [
+                {
+                    "page": doc.metadata.get("page", 0) + 1,
+                    "text": doc.page_content,
+                    "distance": round(float(score), 4),
+                }
+                for doc, score in scored_matches
+            ],
             "source_pages_or_sections": [
                 {"page": section}
                 for section in source_sections
             ],
+            "retrieval_latency_ms": round(retrieval_latency_ms, 2),
+            "generation_latency_ms": round(generation_latency_ms, 2),
+            "end_to_end_latency_ms": round(end_to_end_latency_ms, 2),
         }
 
     except HTTPException:
         raise
+
     except Exception as error:
         raise HTTPException(
             status_code=500,
@@ -502,8 +546,8 @@ def summarize_document(request: SummarizeRequest):
             chunk_size=8000,
             chunk_overlap=300,
         )
-        sections = text_splitter.split_text(full_text)
 
+        sections = text_splitter.split_text(full_text)
         section_summaries = []
 
         for section in sections:
@@ -512,6 +556,7 @@ def summarize_document(request: SummarizeRequest):
 
         if len(section_summaries) == 1:
             final_summary = section_summaries[0]
+
         else:
             combine_prompt = ChatPromptTemplate.from_messages([
                 (
@@ -526,6 +571,7 @@ def summarize_document(request: SummarizeRequest):
             result = (combine_prompt | model).invoke({
                 "summaries": "\n\n".join(section_summaries)
             })
+
             final_summary = result.content
 
         extension = Path(request.filename).suffix.lower()
@@ -539,6 +585,7 @@ def summarize_document(request: SummarizeRequest):
 
     except HTTPException:
         raise
+
     except Exception as error:
         raise HTTPException(
             status_code=500,
