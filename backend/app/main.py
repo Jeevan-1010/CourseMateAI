@@ -2,16 +2,17 @@
 import hashlib
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
+from typing import Literal
 
 import chromadb
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from docx import Document as WordDocument
 
 from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -45,9 +46,15 @@ splitter = RecursiveCharacterTextSplitter(
 )
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class QuestionRequest(BaseModel):
     filename: str
     question: str
+    history: list[ChatMessage] = Field(default_factory=list)
 
 
 class SummarizeRequest(BaseModel):
@@ -352,9 +359,52 @@ def ask_question(request: QuestionRequest):
             detail="Enter a question.",
         )
 
+    # Keep a bounded amount of prior conversation to control prompt size.
+    history = request.history[-24:]
+
+    if any(not message.content.strip() for message in history):
+        raise HTTPException(
+            status_code=400,
+            detail="Conversation history cannot contain empty messages.",
+        )
+
+    # Convert API roles to the role names expected by LangChain prompts.
+    chat_history = [
+        (
+            "human" if message.role == "user" else "ai",
+            message.content,
+        )
+        for message in history
+    ]
+
     try:
+        model = get_language_model()
+        retrieval_query = question
+
+        # Rewrite follow-up questions into standalone search queries.
+        if chat_history:
+            contextualize_prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    "Rewrite the latest student question as a standalone "
+                    "search query for the uploaded study document. Use the "
+                    "conversation only to resolve references and omitted "
+                    "details. Preserve the student's intent. Do not answer "
+                    "the question. If it is already standalone, return it "
+                    "unchanged.",
+                ),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("human", "{question}"),
+            ])
+
+            rewritten = (contextualize_prompt | model).invoke({
+                "chat_history": chat_history,
+                "question": question,
+            })
+            retrieval_query = rewritten.content.strip() or question
+
         vectorstore = get_vectorstore(request.filename)
-        matches = vectorstore.similarity_search(question, k=4)
+        matches = vectorstore.similarity_search(retrieval_query, k=4)
 
         if not matches:
             raise HTTPException(
@@ -371,18 +421,26 @@ def ask_question(request: QuestionRequest):
         prompt = ChatPromptTemplate.from_messages([
             (
                 "system",
-                "Answer the student's question using only the supplied "
-                "document context. If the answer is not present, say so. "
+                "You are CourseMate AI, a study assistant. Answer the "
+                "student's latest question using the uploaded document "
+                "context as the source of factual information. Use the "
+                "conversation history only to understand references and "
+                "the ongoing discussion. Do not treat earlier assistant "
+                "answers as authoritative evidence. If the answer is not "
+                "supported by the document context, clearly say that the "
+                "uploaded document does not provide enough information. "
                 "Do not invent facts.",
             ),
+            MessagesPlaceholder(variable_name="chat_history"),
             (
                 "human",
-                "Document context:\n{context}\n\n"
-                "Student question: {question}",
+                "Uploaded document context:\n{context}\n\n"
+                "Latest student question: {question}",
             ),
         ])
 
-        response = (prompt | get_language_model()).invoke({
+        response = (prompt | model).invoke({
+            "chat_history": chat_history,
             "context": context,
             "question": question,
         })
@@ -395,6 +453,7 @@ def ask_question(request: QuestionRequest):
         return {
             "filename": request.filename,
             "question": question,
+            "retrieval_query": retrieval_query,
             "answer": response.content,
             "source_pages_or_sections": [
                 {"page": section}
@@ -409,7 +468,6 @@ def ask_question(request: QuestionRequest):
             status_code=500,
             detail=f"Question answering failed: {type(error).__name__}",
         )
-
 
 @app.post("/summarize")
 def summarize_document(request: SummarizeRequest):
