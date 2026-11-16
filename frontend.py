@@ -194,6 +194,16 @@ else:
                         json={
                             "filename": filename,
                             "question": question,
+                            # The current question was just appended above.
+                            # Send only earlier turns as conversational context.
+                            "history": [
+                                {
+                                    "role": message["role"],
+                                    "content": message["content"],
+                                }
+                                for message in history[:-1][-24:]
+                                if message.get("role") in {"user", "assistant"}
+                            ],
                         },
                         timeout=180,
                     )
