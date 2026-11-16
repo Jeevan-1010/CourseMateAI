@@ -6,7 +6,7 @@ An AI-powered Retrieval-Augmented Generation (RAG) study assistant that lets stu
 
 CourseMateAI combines a Streamlit interface with a FastAPI backend. Uploaded documents are processed, split into smaller chunks, embedded, and stored in a persistent ChromaDB vector database. When a student asks a question, the application retrieves relevant chunks and supplies them as context to a language model hosted by Groq.
 
-The application is designed to answer from the selected document context and to say when the requested information is not available in that context.
+The application retrieves the top 4 chunks for each question and passes them to the language model as document context. It does not apply a similarity-distance threshold to filter those results. The model is instructed to answer only when the supplied context supports an answer; otherwise, it should state that the uploaded document does not provide enough information. This refusal behavior happens at the answer-generation stage, not because retrieval returns zero chunks.
 
 ## Features
 
