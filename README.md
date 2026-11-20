@@ -255,7 +255,7 @@ Optional environment settings:
 | `RERANKER_ONNX_MODEL_PATH` | `evaluation/models/bge-reranker-v2-m3-onnx/int8/model_quantized.onnx` | Override the ONNX model path |
 | `RERANKER_ONNX_THREADS` | `4` | ONNX Runtime CPU intra-op threads |
 
-Use `RERANKER_BACKEND=onnx_int8` to require the quantized model (startup of the first reranking request fails clearly if it is missing). Use `pytorch` to force the Sentence Transformers implementation. The default `auto` mode falls back to PyTorch if the ONNX file or its runtime cannot be loaded. API responses expose the active backend as `reranker_backend`.
+Use `RERANKER_BACKEND=onnx_int8` to require the quantized model (the first reranking request returns an error if it is missing). Use `pytorch` to force the Sentence Transformers implementation. The default `auto` mode falls back to PyTorch if the ONNX file or its runtime cannot be loaded. API responses expose the active backend as `reranker_backend`.
 
 
 ## Evaluation
