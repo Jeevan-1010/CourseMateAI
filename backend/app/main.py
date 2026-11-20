@@ -869,6 +869,13 @@ def ask_question(request: QuestionRequest):
                         float(distance) if distance is not None else None
                     ),
                     "rerank_score": rerank_scores[id(doc)],
+                    "pair_token_count": len(
+                        get_reranker().tokenizer(
+                            retrieval_query,
+                            doc.page_content,
+                            truncation=False,
+                        )["input_ids"]
+                    ),
                 }
                 for rank, (doc, distance) in enumerate(candidate_matches, start=1)
             ]
