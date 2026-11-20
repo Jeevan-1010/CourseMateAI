@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import statistics
 import urllib.error
 import urllib.request
@@ -91,7 +92,7 @@ def retrieval_study_metrics(retrieved_pages, relevant_pages, k):
     hit_at_1 = int(bool(retrieved_pages and retrieved_pages[0] in relevant))
 
     dcg = sum(
-        1.0 / __import__("math").log2(rank + 1)
+        1.0 / math.log2(rank + 1)
         for rank, page in enumerate(top_k, start=1)
         if page in relevant
     )
@@ -384,6 +385,9 @@ def main():
         print(f"Saved evaluation report: {output_path}")
     print("\nSummary:")
     print(json.dumps(summary, indent=2))
+    if candidate_study is not None:
+        print("\nCandidate study:")
+        print(json.dumps(candidate_study, indent=2))
 
 
 if __name__ == "__main__":
