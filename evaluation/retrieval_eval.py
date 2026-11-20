@@ -13,14 +13,14 @@ def request_answer(
     question: str,
     timeout: int,
     include_retrieval_debug: bool = False,
+    retrieval_only: bool = False,
 ):
-    payload = json.dumps({
-        "filename": filename,
-        "question": question,
-        "include_retrieval_debug": include_retrieval_debug,
-    }).encode("utf-8")
+    request_payload = {"filename": filename, "question": question}
+    if not retrieval_only:
+        request_payload["include_retrieval_debug"] = include_retrieval_debug
+    payload = json.dumps(request_payload).encode("utf-8")
     request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/ask",
+        f"{base_url.rstrip('/')}/{'retrieve' if retrieval_only else 'ask'}",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -125,6 +125,11 @@ def main():
         action="store_true",
         help="Cache pre-reranking candidates and compare retrieval/reranking K values offline.",
     )
+    parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Use /retrieve to collect candidates without calling the LLM.",
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -166,6 +171,7 @@ def main():
             question,
             args.timeout,
             include_retrieval_debug=args.candidate_study,
+            retrieval_only=args.retrieval_only,
         )
         retrieved = unique_pages(response.get("retrieved_context", []))
         metrics = score_retrieval(retrieved, relevant_pages, args.k)
