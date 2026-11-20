@@ -178,6 +178,7 @@ def main():
             **metrics,
             "retrieval_latency_ms": response.get("retrieval_latency_ms"),
             "reranking_latency_ms": response.get("reranking_latency_ms"),
+            "generation_latency_ms": response.get("generation_latency_ms"),
             "end_to_end_latency_ms": response.get("end_to_end_latency_ms"),
             "deduplicated_chunks_count": response.get(
                 "deduplicated_chunks_count"
@@ -247,6 +248,7 @@ def main():
     for key in [
         "retrieval_latency_ms",
         "reranking_latency_ms",
+        "generation_latency_ms",
         "end_to_end_latency_ms",
         "deduplicated_chunks_count",
         "candidate_chunks_count",
