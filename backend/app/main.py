@@ -1,5 +1,6 @@
 
 import hashlib
+import re
 import time
 from functools import lru_cache
 from io import BytesIO
@@ -68,11 +69,18 @@ splitter = RecursiveCharacterTextSplitter(
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 RERANK_CANDIDATE_K = 20
 RERANK_FINAL_K = 4
+RERANK_MAX_LENGTH = 384
+RERANK_BATCH_SIZE = 16
 
 
 @lru_cache(maxsize=1)
 def get_reranker() -> CrossEncoder:
-    return CrossEncoder(RERANKER_MODEL_NAME)
+    # Study chunks are limited to 1,000 characters. A 384-token cap avoids
+    # unnecessary transformer work while retaining room for most chunks.
+    return CrossEncoder(
+        RERANKER_MODEL_NAME,
+        max_length=RERANK_MAX_LENGTH,
+    )
 
 
 def rerank_documents(query: str, documents: list[Document]):
@@ -83,7 +91,7 @@ def rerank_documents(query: str, documents: list[Document]):
     pairs = [(query, document.page_content) for document in documents]
     scores = reranker.predict(
         pairs,
-        batch_size=8,
+        batch_size=RERANK_BATCH_SIZE,
         show_progress_bar=False,
     )
 
@@ -96,6 +104,88 @@ def rerank_documents(query: str, documents: list[Document]):
         (document, float(score))
         for document, score in ranked[:RERANK_FINAL_K]
     ]
+
+
+def _normalized_chunk_text(text: str) -> str:
+    return re.sub(r"\\s+", " ", text).strip().casefold()
+
+
+def _chunk_token_set(text: str) -> set[str]:
+    return set(re.findall(r"\\w+", _normalized_chunk_text(text)))
+
+
+def deduplicate_document_matches(matches, similarity_threshold: float = 0.92):
+    """Keep the first/highest-ranked copy of exact or near-identical chunks."""
+    unique = []
+    exact_seen = set()
+    token_sets = []
+
+    for document, distance in matches:
+        normalized = _normalized_chunk_text(document.page_content)
+        if not normalized:
+            continue
+
+        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+        if digest in exact_seen:
+            continue
+
+        tokens = _chunk_token_set(normalized)
+        is_near_duplicate = False
+        for existing_tokens in token_sets:
+            if not tokens or not existing_tokens:
+                continue
+            union = tokens | existing_tokens
+            similarity = len(tokens & existing_tokens) / len(union)
+            if similarity >= similarity_threshold:
+                is_near_duplicate = True
+                break
+
+        if is_near_duplicate:
+            continue
+
+        exact_seen.add(digest)
+        token_sets.append(tokens)
+        unique.append((document, distance))
+
+    return unique
+
+
+def retrieve_candidate_matches(vectorstore: Chroma, query: str):
+    """Combine similarity and diversity retrieval for broad/multi-part questions."""
+    similarity_matches = vectorstore.similarity_search_with_score(
+        query,
+        k=RERANK_CANDIDATE_K,
+    )
+
+    query_is_broad = bool(
+        re.search(
+            r"\\b(all|types|different|compare|difference|and|examples|various|multiple)\\b",
+            query,
+            flags=re.IGNORECASE,
+        )
+    )
+
+    if not query_is_broad:
+        raw_matches = similarity_matches
+    else:
+        diverse_documents = vectorstore.max_marginal_relevance_search(
+            query,
+            k=RERANK_CANDIDATE_K,
+            fetch_k=max(RERANK_CANDIDATE_K * 3, 40),
+            lambda_mult=0.65,
+        )
+
+        # Interleave both rankings so MMR contributes coverage without
+        # allowing either retriever to dominate the candidate pool.
+        raw_matches = []
+        for index in range(max(len(similarity_matches), len(diverse_documents))):
+            if index < len(similarity_matches):
+                raw_matches.append(similarity_matches[index])
+            if index < len(diverse_documents):
+                raw_matches.append((diverse_documents[index], None))
+
+    unique_matches = deduplicate_document_matches(raw_matches)
+    return raw_matches, unique_matches[:RERANK_CANDIDATE_K]
 
 
 class ChatMessage(BaseModel):
@@ -575,10 +665,11 @@ def ask_question(request: QuestionRequest):
         vectorstore = get_vectorstore(request.filename)
         retrieval_start = time.perf_counter()
 
-        # Retrieve a wider candidate set, then rerank it for relevance.
-        candidate_matches = vectorstore.similarity_search_with_score(
+        # Combine semantic similarity with MMR diversity for broad questions,
+        # then remove redundant chunks before expensive cross-encoder scoring.
+        raw_candidate_matches, candidate_matches = retrieve_candidate_matches(
+            vectorstore,
             retrieval_query,
-            k=RERANK_CANDIDATE_K,
         )
 
         retrieval_latency_ms = (
@@ -591,7 +682,7 @@ def ask_question(request: QuestionRequest):
             [doc for doc, distance in candidate_matches],
         )
         candidate_distances = {
-            id(doc): float(distance)
+            id(doc): float(distance) if distance is not None else None
             for doc, distance in candidate_matches
         }
         selected_matches = [
@@ -692,12 +783,16 @@ def ask_question(request: QuestionRequest):
                 {
                     "page": doc.metadata.get("page", 0) + 1,
                     "text": doc.page_content,
-                    "distance": round(distance, 4),
+                    "distance": round(distance, 4) if distance is not None else None,
                     "rerank_score": round(rerank_score, 4),
                 }
                 for doc, rerank_score, distance in selected_matches
             ],
-            "candidate_chunks_count": len(candidate_matches),
+            "candidate_chunks_count": len(raw_candidate_matches),
+            "unique_candidate_chunks_count": len(candidate_matches),
+            "deduplicated_chunks_count": (
+                len(raw_candidate_matches) - len(candidate_matches)
+            ),
             "reranked_chunks_count": len(selected_matches),
             "source_pages_or_sections": [
                 {"page": section}
