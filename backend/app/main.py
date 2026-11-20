@@ -67,7 +67,7 @@ splitter = RecursiveCharacterTextSplitter(
 )
 
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
-RERANK_CANDIDATE_K = 20
+RERANK_CANDIDATE_K = 16
 RERANK_FINAL_K = 4
 RERANK_MAX_LENGTH = 384
 RERANK_BATCH_SIZE = 16
@@ -842,6 +842,7 @@ def ask_question(request: QuestionRequest):
             "deduplicated_chunks_count": (
                 len(raw_candidate_matches) - len(unique_candidate_matches)
             ),
+            "reranker_input_chunks_count": len(candidate_matches),
             "reranked_chunks_count": len(selected_matches),
             "source_pages_or_sections": [
                 {"page": section}
