@@ -70,13 +70,13 @@ RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 RERANK_CANDIDATE_K = 16
 RERANK_FINAL_K = 4
 RERANK_MAX_LENGTH = 256
-RERANK_BATCH_SIZE = 16
+RERANK_BATCH_SIZE = 32
 
 
 @lru_cache(maxsize=1)
 def get_reranker() -> CrossEncoder:
-    # Study chunks are limited to 1,000 characters. A 384-token cap avoids
-    # unnecessary transformer work while retaining room for most chunks.
+    # Study chunks are limited to 1,000 characters. A 256-token cap limits
+    # transformer work while retaining room for most chunks.
     return CrossEncoder(
         RERANKER_MODEL_NAME,
         max_length=RERANK_MAX_LENGTH,
