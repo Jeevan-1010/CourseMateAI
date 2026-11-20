@@ -185,7 +185,7 @@ def retrieve_candidate_matches(vectorstore: Chroma, query: str):
                 raw_matches.append((diverse_documents[index], None))
 
     unique_matches = deduplicate_document_matches(raw_matches)
-    return raw_matches, unique_matches[:RERANK_CANDIDATE_K]
+    return raw_matches, unique_matches
 
 
 class ChatMessage(BaseModel):
@@ -667,10 +667,11 @@ def ask_question(request: QuestionRequest):
 
         # Combine semantic similarity with MMR diversity for broad questions,
         # then remove redundant chunks before expensive cross-encoder scoring.
-        raw_candidate_matches, candidate_matches = retrieve_candidate_matches(
+        raw_candidate_matches, unique_candidate_matches = retrieve_candidate_matches(
             vectorstore,
             retrieval_query,
         )
+        candidate_matches = unique_candidate_matches[:RERANK_CANDIDATE_K]
 
         retrieval_latency_ms = (
             time.perf_counter() - retrieval_start
@@ -789,9 +790,9 @@ def ask_question(request: QuestionRequest):
                 for doc, rerank_score, distance in selected_matches
             ],
             "candidate_chunks_count": len(raw_candidate_matches),
-            "unique_candidate_chunks_count": len(candidate_matches),
+            "unique_candidate_chunks_count": len(unique_candidate_matches),
             "deduplicated_chunks_count": (
-                len(raw_candidate_matches) - len(candidate_matches)
+                len(raw_candidate_matches) - len(unique_candidate_matches)
             ),
             "reranked_chunks_count": len(selected_matches),
             "source_pages_or_sections": [
