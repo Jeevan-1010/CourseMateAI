@@ -42,8 +42,17 @@ def score_retrieval(retrieved_pages, relevant_pages, k: int):
     top_k = retrieved_pages[:k]
     hits = [page for page in top_k if page in relevant]
 
+    # Unanswerable questions have no relevant pages and are excluded from
+    # retrieval-ranking averages rather than being treated as retrieval misses.
+    if not relevant:
+        return {
+            f"precision_at_{k}": None,
+            f"recall_at_{k}": None,
+            "reciprocal_rank": None,
+        }
+
     precision = len(hits) / k
-    recall = len(hits) / len(relevant) if relevant else 0.0
+    recall = len(hits) / len(relevant)
 
     reciprocal_rank = 0.0
     for rank, page in enumerate(retrieved_pages, start=1):
@@ -104,11 +113,6 @@ def main():
         question = case["question"]
         filename = case["filename"]
         relevant_pages = sorted(set(case.get("relevant_pages", [])))
-        if not relevant_pages:
-            raise SystemExit(
-                f"Test case {index} has no relevant_pages labels."
-            )
-
         response = request_answer(
             args.base_url,
             filename,
@@ -119,7 +123,9 @@ def main():
         metrics = score_retrieval(retrieved, relevant_pages, args.k)
 
         results.append({
+            "id": case.get("id"),
             "question": question,
+            "expected_answerable": case.get("expected_answerable", bool(relevant_pages)),
             "relevant_pages": relevant_pages,
             "retrieved_pages": retrieved,
             **metrics,
@@ -131,24 +137,38 @@ def main():
             ),
         })
 
+        if relevant_pages:
+            metric_text = (
+                f"P@{args.k}={metrics[f'precision_at_{args.k}']:.3f} "
+                f"R@{args.k}={metrics[f'recall_at_{args.k}']:.3f} "
+                f"RR={metrics['reciprocal_rank']:.3f}"
+            )
+        else:
+            metric_text = "Unanswerable (excluded from retrieval averages)"
+
         print(
-            f"[{index}/{len(cases)}] P@{args.k}="
-            f"{metrics[f'precision_at_{args.k}']:.3f} "
-            f"R@{args.k}={metrics[f'recall_at_{args.k}']:.3f} "
-            f"RR={metrics['reciprocal_rank']:.3f} "
+            f"[{index}/{len(cases)}] {metric_text} "
             f"rerank={response.get('reranking_latency_ms')} ms"
         )
 
+    answerable_results = [
+        item for item in results if item[f"precision_at_{args.k}"] is not None
+    ]
+    if not answerable_results:
+        raise SystemExit("No answerable questions with relevant_pages labels were found.")
+
     summary = {
         f"precision_at_{args.k}": statistics.mean(
-            item[f"precision_at_{args.k}"] for item in results
+            item[f"precision_at_{args.k}"] for item in answerable_results
         ),
         f"recall_at_{args.k}": statistics.mean(
-            item[f"recall_at_{args.k}"] for item in results
+            item[f"recall_at_{args.k}"] for item in answerable_results
         ),
         "mrr": statistics.mean(
-            item["reciprocal_rank"] for item in results
+            item["reciprocal_rank"] for item in answerable_results
         ),
+        "answerable_question_count": len(answerable_results),
+        "unanswerable_question_count": len(results) - len(answerable_results),
     }
 
     for key in [
