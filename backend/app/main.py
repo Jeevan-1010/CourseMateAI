@@ -151,10 +151,11 @@ def deduplicate_document_matches(matches, similarity_threshold: float = 0.92):
 
 
 def split_query_aspects(query: str) -> list[str]:
-    """Extract searchable concepts from comma- and conjunction-separated questions."""
+    """Extract meaningful concepts without splitting SQL phrases like 'AND operator'."""
     cleaned = re.sub(r"\s+", " ", query).strip()
     parts = re.split(
-        r"\s*(?:,|;|\b(?:and|vs\.?|versus|plus|as well as|along with)\b)\s*",
+        r"\s*(?:,|;|\b(?:vs\.?|versus|plus|as well as|along with)\b|"
+        r"\band\b(?!\s+(?:operator|operators|condition|conditions|clause|keyword|logic)\b))\s*",
         cleaned,
         flags=re.IGNORECASE,
     )
@@ -163,11 +164,14 @@ def split_query_aspects(query: str) -> list[str]:
     seen = set()
     for part in parts:
         aspect = re.sub(
-            r"^(?:please\s+)?(?:explain|describe|compare|discuss|define|what is|what are|tell me about)\s+",
+            r"^(?:please\s+)?(?:explain|describe|compare|discuss|define|"
+            r"what is|what are|how is|how are|how does|how do|"
+            r"tell me about|give me|show me)\s+",
             "",
             part.strip(),
             flags=re.IGNORECASE,
         ).strip(" ?.:")
+        aspect = re.sub(r"^(?:the|a|an)\s+", "", aspect, flags=re.IGNORECASE)
         normalized = aspect.casefold()
         if len(aspect.split()) < 1 or len(normalized) < 3:
             continue
@@ -198,7 +202,7 @@ def retrieve_candidate_matches(vectorstore: Chroma, query: str):
     query_is_broad = bool(
         aspects
         or re.search(
-            r"\b(all|types|different|compare|difference|and|examples|various|multiple)\b",
+            r"\b(all|types|different|compare|difference|examples|various|multiple)\b",
             query,
             flags=re.IGNORECASE,
         )
