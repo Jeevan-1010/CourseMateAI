@@ -102,7 +102,7 @@ def rerank_documents(query: str, documents: list[Document]):
     )
     return [
         (document, float(score))
-        for document, score in ranked[:RERANK_FINAL_K]
+        for document, score in ranked
     ]
 
 
@@ -240,6 +240,7 @@ class QuestionRequest(BaseModel):
     question: str
     conversation_id: str | None = None
     history: list[ChatMessage] = Field(default_factory=list)
+    include_retrieval_debug: bool = False
 
 
 class SummarizeRequest(BaseModel):
@@ -730,8 +731,12 @@ def ask_question(request: QuestionRequest):
         }
         selected_matches = [
             (doc, rerank_score, candidate_distances[id(doc)])
-            for doc, rerank_score in reranked_matches
+            for doc, rerank_score in reranked_matches[:RERANK_FINAL_K]
         ]
+        rerank_scores = {
+            id(doc): rerank_score
+            for doc, rerank_score in reranked_matches
+        }
         reranking_latency_ms = (
             time.perf_counter() - reranking_start
         ) * 1000
@@ -819,7 +824,7 @@ def ask_question(request: QuestionRequest):
             time.perf_counter() - request_start
         ) * 1000
 
-        return {
+        result = {
             "filename": request.filename,
             "conversation_id": conversation_id,
             "question": question,
@@ -853,6 +858,22 @@ def ask_question(request: QuestionRequest):
             "generation_latency_ms": round(generation_latency_ms, 2),
             "end_to_end_latency_ms": round(end_to_end_latency_ms, 2),
         }
+
+        if request.include_retrieval_debug:
+            result["retrieval_candidates"] = [
+                {
+                    "retrieval_rank": rank,
+                    "page": doc.metadata.get("page", 0) + 1,
+                    "text": doc.page_content,
+                    "distance": (
+                        float(distance) if distance is not None else None
+                    ),
+                    "rerank_score": rerank_scores[id(doc)],
+                }
+                for rank, (doc, distance) in enumerate(candidate_matches, start=1)
+            ]
+
+        return result
 
     except HTTPException:
         raise
