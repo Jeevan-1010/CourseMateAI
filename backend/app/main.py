@@ -696,10 +696,13 @@ def ask_question(request: QuestionRequest):
 
         print("\nReranking results for:", retrieval_query)
         for doc, rerank_score, distance in selected_matches:
+            distance_label = (
+                f"{distance:.4f}" if distance is not None else "MMR-only"
+            )
             print(
                 f"Page: {doc.metadata.get('page', 0) + 1}, "
                 f"Rerank score: {rerank_score:.4f}, "
-                f"Vector distance: {distance:.4f}"
+                f"Vector distance: {distance_label}"
             )
 
         matches = [doc for doc, rerank_score, distance in selected_matches]
