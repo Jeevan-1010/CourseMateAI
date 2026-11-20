@@ -73,7 +73,29 @@ def main():
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset)
-    cases = json.loads(dataset_path.read_text(encoding="utf-8"))
+    dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+
+    # Support both the simple list format and the project's existing
+    # {"document": "...", "tests": [...]} evaluation dataset.
+    if isinstance(dataset, dict):
+        document = dataset.get("document")
+        tests = dataset.get("tests")
+        if not document or not isinstance(tests, list):
+            raise SystemExit(
+                "Dataset object must contain a document name and a tests list."
+            )
+        cases = [
+            {
+                **test,
+                "filename": test.get("filename", document),
+            }
+            for test in tests
+        ]
+    elif isinstance(dataset, list):
+        cases = dataset
+    else:
+        raise SystemExit("Dataset must be a list or an object containing document and tests.")
+
     if not cases:
         raise SystemExit("The evaluation dataset is empty.")
 
@@ -81,7 +103,7 @@ def main():
     for index, case in enumerate(cases, start=1):
         question = case["question"]
         filename = case["filename"]
-        relevant_pages = sorted(set(case["relevant_pages"]))
+        relevant_pages = sorted(set(case.get("relevant_pages", [])))
         if not relevant_pages:
             raise SystemExit(
                 f"Test case {index} has no relevant_pages labels."
