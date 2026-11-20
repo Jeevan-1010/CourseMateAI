@@ -24,3 +24,6 @@ vectorStore/
 backend/uploads/
 *.pdf
 .streamlit/secrets.toml
+
+# Locally exported benchmark models
+evaluation/models/
