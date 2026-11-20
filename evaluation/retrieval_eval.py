@@ -6,10 +6,17 @@ import urllib.request
 from pathlib import Path
 
 
-def request_answer(base_url: str, filename: str, question: str, timeout: int):
+def request_answer(
+    base_url: str,
+    filename: str,
+    question: str,
+    timeout: int,
+    include_retrieval_debug: bool = False,
+):
     payload = json.dumps({
         "filename": filename,
         "question": question,
+        "include_retrieval_debug": include_retrieval_debug,
     }).encode("utf-8")
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}/ask",
@@ -67,6 +74,40 @@ def score_retrieval(retrieved_pages, relevant_pages, k: int):
     }
 
 
+def rank_candidate_pages(candidates, candidate_k=None):
+    selected = candidates if candidate_k is None else candidates[:candidate_k]
+    ranked = sorted(
+        selected,
+        key=lambda item: float(item["rerank_score"]),
+        reverse=True,
+    )
+    return unique_pages(ranked)
+
+
+def retrieval_study_metrics(retrieved_pages, relevant_pages, k):
+    metrics = score_retrieval(retrieved_pages, relevant_pages, k)
+    relevant = set(relevant_pages)
+    top_k = retrieved_pages[:k]
+    hit_at_1 = int(bool(retrieved_pages and retrieved_pages[0] in relevant))
+
+    dcg = sum(
+        1.0 / __import__("math").log2(rank + 1)
+        for rank, page in enumerate(top_k, start=1)
+        if page in relevant
+    )
+    ideal_hits = min(len(relevant), k)
+    idcg = sum(
+        1.0 / __import__("math").log2(rank + 1)
+        for rank in range(1, ideal_hits + 1)
+    )
+
+    return {
+        **metrics,
+        "hit_at_1": hit_at_1 if relevant else None,
+        f"ndcg_at_{k}": dcg / idcg if idcg else None,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate CourseMateAI retrieval using labeled relevant pages."
@@ -78,6 +119,11 @@ def main():
     )
     parser.add_argument("--k", type=int, default=4)
     parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument(
+        "--candidate-study",
+        action="store_true",
+        help="Cache pre-reranking candidates and compare retrieval/reranking K values offline.",
+    )
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
@@ -118,11 +164,12 @@ def main():
             filename,
             question,
             args.timeout,
+            include_retrieval_debug=args.candidate_study,
         )
         retrieved = unique_pages(response.get("retrieved_context", []))
         metrics = score_retrieval(retrieved, relevant_pages, args.k)
 
-        results.append({
+        result_item = {
             "id": case.get("id"),
             "question": question,
             "expected_answerable": case.get("expected_answerable", bool(relevant_pages)),
@@ -142,7 +189,26 @@ def main():
             "reranker_input_chunks_count": response.get(
                 "reranker_input_chunks_count"
             ),
-        })
+        }
+
+        if args.candidate_study:
+            candidates = response.get("retrieval_candidates")
+            if not isinstance(candidates, list):
+                raise RuntimeError(
+                    "API did not return retrieval_candidates. "
+                    "Pull the latest backend code and restart FastAPI."
+                )
+            result_item["retrieval_candidates"] = candidates
+            result_item["no_rerank_retrieved_pages"] = unique_pages(candidates)
+
+            if relevant_pages:
+                result_item["no_rerank_metrics"] = retrieval_study_metrics(
+                    result_item["no_rerank_retrieved_pages"],
+                    relevant_pages,
+                    args.k,
+                )
+
+        results.append(result_item)
 
         if relevant_pages:
             metric_text = (
@@ -194,11 +260,86 @@ def main():
         if values:
             summary[f"average_{key}"] = statistics.mean(values)
 
+    candidate_study = None
+    if args.candidate_study:
+        candidate_ks = [6, 8, 10, 12, 16]
+        study_rows = []
+        for candidate_k in candidate_ks:
+            per_question = []
+            for item in results:
+                relevant_pages = item["relevant_pages"]
+                if not relevant_pages:
+                    continue
+                ranked_pages = rank_candidate_pages(
+                    item["retrieval_candidates"],
+                    candidate_k=candidate_k,
+                )
+                per_question.append(
+                    retrieval_study_metrics(
+                        ranked_pages,
+                        relevant_pages,
+                        args.k,
+                    )
+                )
+
+            study_rows.append({
+                "candidate_k": candidate_k,
+                "answerable_question_count": len(per_question),
+                f"precision_at_{args.k}": statistics.mean(
+                    row[f"precision_at_{args.k}"] for row in per_question
+                ),
+                f"recall_at_{args.k}": statistics.mean(
+                    row[f"recall_at_{args.k}"] for row in per_question
+                ),
+                "mrr": statistics.mean(
+                    row["reciprocal_rank"] for row in per_question
+                ),
+                "hit_at_1": statistics.mean(
+                    row["hit_at_1"] for row in per_question
+                ),
+                f"ndcg_at_{args.k}": statistics.mean(
+                    row[f"ndcg_at_{args.k}"] for row in per_question
+                ),
+            })
+
+        no_rerank_rows = [
+            item["no_rerank_metrics"]
+            for item in results
+            if item.get("no_rerank_metrics") is not None
+        ]
+        candidate_study = {
+            "note": (
+                "Offline replay of the cached candidate pool and reranker scores. "
+                "K values select prefixes of the original candidate order before "
+                "sorting those selected candidates by their cached scores."
+            ),
+            "no_rerank_baseline": {
+                "answerable_question_count": len(no_rerank_rows),
+                f"precision_at_{args.k}": statistics.mean(
+                    row[f"precision_at_{args.k}"] for row in no_rerank_rows
+                ),
+                f"recall_at_{args.k}": statistics.mean(
+                    row[f"recall_at_{args.k}"] for row in no_rerank_rows
+                ),
+                "mrr": statistics.mean(
+                    row["reciprocal_rank"] for row in no_rerank_rows
+                ),
+                "hit_at_1": statistics.mean(
+                    row["hit_at_1"] for row in no_rerank_rows
+                ),
+                f"ndcg_at_{args.k}": statistics.mean(
+                    row[f"ndcg_at_{args.k}"] for row in no_rerank_rows
+                ),
+            },
+            "reranked_candidate_k_sweep": study_rows,
+        }
+
     report = {
         "dataset": str(dataset_path),
         "question_count": len(results),
         "k": args.k,
         "summary": summary,
+        "candidate_study": candidate_study,
         "results": results,
     }
 
