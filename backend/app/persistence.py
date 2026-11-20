@@ -144,7 +144,7 @@ def list_conversations(document_id: str):
     with _session() as session:
         conversations = session.scalars(
             select(Conversation)
-            .where(Conversation.document_id == document_id)
+            .where(Conversation.document_id == uuid.UUID(document_id))
             .order_by(Conversation.updated_at.desc())
         ).all()
         return [
