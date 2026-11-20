@@ -18,7 +18,17 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
 from backend.app.database import check_database_connection, initialize_database
-from backend.app.persistence import (\n    conversation_belongs_to_document,\n    create_conversation,\n    get_document_id,\n    list_conversations,\n    list_documents,\n    load_conversation_context,\n    save_document,\n    save_exchange,\n    get_conversation_messages,\n)
+from backend.app.persistence import (
+    conversation_belongs_to_document,
+    create_conversation,
+    get_document_id,
+    list_conversations,
+    list_documents,
+    load_conversation_context,
+    save_document,
+    save_exchange,
+    get_conversation_messages,
+)
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
