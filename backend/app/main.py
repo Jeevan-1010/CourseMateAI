@@ -107,11 +107,11 @@ def rerank_documents(query: str, documents: list[Document]):
 
 
 def _normalized_chunk_text(text: str) -> str:
-    return re.sub(r"\\s+", " ", text).strip().casefold()
+    return re.sub(r"\s+", " ", text).strip().casefold()
 
 
 def _chunk_token_set(text: str) -> set[str]:
-    return set(re.findall(r"\\w+", _normalized_chunk_text(text)))
+    return set(re.findall(r"\w+", _normalized_chunk_text(text)))
 
 
 def deduplicate_document_matches(matches, similarity_threshold: float = 0.92):
@@ -159,7 +159,7 @@ def retrieve_candidate_matches(vectorstore: Chroma, query: str):
 
     query_is_broad = bool(
         re.search(
-            r"\\b(all|types|different|compare|difference|and|examples|various|multiple)\\b",
+            r"\b(all|types|different|compare|difference|and|examples|various|multiple)\b",
             query,
             flags=re.IGNORECASE,
         )
