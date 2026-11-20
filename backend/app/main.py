@@ -1,6 +1,7 @@
 
 import hashlib
 import time
+from functools import lru_cache
 from io import BytesIO
 from pathlib import Path, PureWindowsPath
 from typing import Literal
@@ -17,6 +18,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
+from sentence_transformers import CrossEncoder
 from backend.app.database import check_database_connection, initialize_database
 from backend.app.persistence import (
     conversation_belongs_to_document,
@@ -62,6 +64,38 @@ splitter = RecursiveCharacterTextSplitter(
     chunk_size=1000,
     chunk_overlap=200,
 )
+
+RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
+RERANK_CANDIDATE_K = 20
+RERANK_FINAL_K = 4
+
+
+@lru_cache(maxsize=1)
+def get_reranker() -> CrossEncoder:
+    return CrossEncoder(RERANKER_MODEL_NAME)
+
+
+def rerank_documents(query: str, documents: list[Document]):
+    if not documents:
+        return []
+
+    reranker = get_reranker()
+    pairs = [(query, document.page_content) for document in documents]
+    scores = reranker.predict(
+        pairs,
+        batch_size=8,
+        show_progress_bar=False,
+    )
+
+    ranked = sorted(
+        zip(documents, scores),
+        key=lambda item: float(item[1]),
+        reverse=True,
+    )
+    return [
+        (document, float(score))
+        for document, score in ranked[:RERANK_FINAL_K]
+    ]
 
 
 class ChatMessage(BaseModel):
@@ -541,26 +575,42 @@ def ask_question(request: QuestionRequest):
         vectorstore = get_vectorstore(request.filename)
         retrieval_start = time.perf_counter()
 
-        # Retrieve four chunks using the rewritten query and collect distances.
-        scored_matches = vectorstore.similarity_search_with_score(
+        # Retrieve a wider candidate set, then rerank it for relevance.
+        candidate_matches = vectorstore.similarity_search_with_score(
             retrieval_query,
-            k=4,
+            k=RERANK_CANDIDATE_K,
         )
 
         retrieval_latency_ms = (
             time.perf_counter() - retrieval_start
         ) * 1000
 
-        # Diagnostic output only: no filtering is applied yet.
-        print("\nRetrieval scores for:", retrieval_query)
+        reranking_start = time.perf_counter()
+        reranked_matches = rerank_documents(
+            retrieval_query,
+            [doc for doc, distance in candidate_matches],
+        )
+        candidate_distances = {
+            id(doc): float(distance)
+            for doc, distance in candidate_matches
+        }
+        selected_matches = [
+            (doc, rerank_score, candidate_distances[id(doc)])
+            for doc, rerank_score in reranked_matches
+        ]
+        reranking_latency_ms = (
+            time.perf_counter() - reranking_start
+        ) * 1000
 
-        for doc, score in scored_matches:
+        print("\nReranking results for:", retrieval_query)
+        for doc, rerank_score, distance in selected_matches:
             print(
                 f"Page: {doc.metadata.get('page', 0) + 1}, "
-                f"Distance: {score:.4f}"
+                f"Rerank score: {rerank_score:.4f}, "
+                f"Vector distance: {distance:.4f}"
             )
 
-        matches = [doc for doc, score in scored_matches]
+        matches = [doc for doc, rerank_score, distance in selected_matches]
 
         if not matches:
             raise HTTPException(
@@ -642,15 +692,19 @@ def ask_question(request: QuestionRequest):
                 {
                     "page": doc.metadata.get("page", 0) + 1,
                     "text": doc.page_content,
-                    "distance": round(float(score), 4),
+                    "distance": round(distance, 4),
+                    "rerank_score": round(rerank_score, 4),
                 }
-                for doc, score in scored_matches
+                for doc, rerank_score, distance in selected_matches
             ],
+            "candidate_chunks_count": len(candidate_matches),
+            "reranked_chunks_count": len(selected_matches),
             "source_pages_or_sections": [
                 {"page": section}
                 for section in source_sections
             ],
             "retrieval_latency_ms": round(retrieval_latency_ms, 2),
+            "reranking_latency_ms": round(reranking_latency_ms, 2),
             "generation_latency_ms": round(generation_latency_ms, 2),
             "end_to_end_latency_ms": round(end_to_end_latency_ms, 2),
         }
