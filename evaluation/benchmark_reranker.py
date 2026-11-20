@@ -245,6 +245,14 @@ def make_ort_predictor(model_path: Path, tokenizer, threads: int, max_length: in
             for name, value in encoded.items()
             if name in input_names
         }
+        if "token_type_ids" in input_names and "token_type_ids" not in feeds:
+            feeds["token_type_ids"] = np.zeros_like(encoded["input_ids"])
+        missing_inputs = input_names - set(feeds)
+        if missing_inputs:
+            raise RuntimeError(
+                "The ONNX model requires unsupported inputs: "
+                + ", ".join(sorted(missing_inputs))
+            )
         outputs = session.run(None, feeds)
         return np.asarray(outputs[0]).reshape(-1)
 
