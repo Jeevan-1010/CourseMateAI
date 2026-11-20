@@ -369,6 +369,12 @@ async def upload_document(file: UploadFile = File(...)):
         pages = load_document_pages(filename)
         has_text = any(page["text"].strip() for page in pages)
 
+        save_document(
+            filename=filename,
+            file_type=extension[1:].upper(),
+            file_size_bytes=len(content),
+        )
+
         return {
             "message": "Document uploaded successfully.",
             "filename": filename,
@@ -563,8 +569,11 @@ def ask_question(request: QuestionRequest):
             time.perf_counter() - request_start
         ) * 1000
 
+        save_exchange(conversation_id, question, response.content)
+
         return {
             "filename": request.filename,
+            "conversation_id": conversation_id,
             "question": question,
             "retrieval_query": retrieval_query,
             "answer": response.content,
