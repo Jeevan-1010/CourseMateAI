@@ -70,6 +70,7 @@ class ChatMessage(BaseModel):
 class QuestionRequest(BaseModel):
     filename: str
     question: str
+    conversation_id: str | None = None
     history: list[ChatMessage] = Field(default_factory=list)
 
 
@@ -257,7 +258,28 @@ def health():
         "service": "CourseMate AI API",
     }
 
-@app.get("/documents")\ndef get_documents():\n    return {"documents": list_documents()}\n\n\n@app.get("/documents/{filename}/conversations")\ndef get_document_conversations(filename: str):\n    document_id = get_document_id(filename)\n    if document_id is None:\n        raise HTTPException(status_code=404, detail="Document not found.")\n    return {"conversations": list_conversations(document_id)}\n\n\n@app.get("/conversations/{conversation_id}")\ndef get_conversation(conversation_id: str):\n    messages = get_conversation_messages(conversation_id)\n    if messages is None:\n        raise HTTPException(status_code=404, detail="Conversation not found.")\n    return {"conversation_id": conversation_id, "messages": messages}\n\n\n@app.get("/db-health")
+@app.get("/documents")
+def get_documents():
+    return {"documents": list_documents()}
+
+
+@app.get("/documents/{filename}/conversations")
+def get_document_conversations(filename: str):
+    document_id = get_document_id(filename)
+    if document_id is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return {"conversations": list_conversations(document_id)}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str):
+    messages = get_conversation_messages(conversation_id)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"conversation_id": conversation_id, "messages": messages}
+
+
+@app.get("/db-health")
 def database_health():
     try:
         check_database_connection()
