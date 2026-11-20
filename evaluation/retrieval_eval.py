@@ -307,12 +307,43 @@ def main():
             for item in results
             if item.get("no_rerank_metrics") is not None
         ]
+        token_counts = [
+            candidate["pair_token_count"]
+            for item in results
+            for candidate in item["retrieval_candidates"]
+            if isinstance(candidate.get("pair_token_count"), int)
+        ]
+        token_counts_sorted = sorted(token_counts)
+
+        def percentile(values, fraction):
+            if not values:
+                return None
+            index = min(
+                len(values) - 1,
+                int((len(values) - 1) * fraction),
+            )
+            return values[index]
+
         candidate_study = {
             "note": (
                 "Offline replay of the cached candidate pool and reranker scores. "
                 "K values select prefixes of the original candidate order before "
                 "sorting those selected candidates by their cached scores."
             ),
+            "token_length_audit": {
+                "pair_count": len(token_counts),
+                "p50_pair_tokens": percentile(token_counts_sorted, 0.50),
+                "p95_pair_tokens": percentile(token_counts_sorted, 0.95),
+                "pairs_over_256_tokens": sum(
+                    count > 256 for count in token_counts
+                ),
+                "pairs_over_384_tokens": sum(
+                    count > 384 for count in token_counts
+                ),
+                "pairs_over_512_tokens": sum(
+                    count > 512 for count in token_counts
+                ),
+            },
             "no_rerank_baseline": {
                 "answerable_question_count": len(no_rerank_rows),
                 f"precision_at_{args.k}": statistics.mean(
