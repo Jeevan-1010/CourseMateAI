@@ -91,6 +91,7 @@ The FastAPI backend exposes the following endpoints:
 | `POST` | `/upload` | Uploads and validates a PDF, TXT, or DOCX file. Send the file as multipart form data using the `file` field. |
 | `GET` | `/extract/{filename}` | Extracts the document text and returns its pages or sections. |
 | `POST` | `/ask` | Answers a question using retrieved document context. |
+| `POST` | `/retrieve` | Runs retrieval, deduplication, and reranking without calling the language model; useful for retrieval evaluation and diagnostics. |
 | `POST` | `/summarize` | Generates a study summary for an uploaded document. |
 
 ### Request examples
@@ -110,7 +111,7 @@ Question answering:
 
 The `history` field is optional and defaults to an empty list. Each message must have a `role` of `user` or `assistant` and a `content` string. The frontend sends recent messages from the current chat session; the backend uses up to the latest 24 messages. Starting a new chat clears that conversation history. When history is supplied, the backend may make an additional model call to rewrite a follow-up question before retrieval.
 
-The `/ask` response includes `retrieval_query`, `retrieved_context` (page, text, and distance for each retrieved chunk), `source_pages_or_sections`, `retrieval_latency_ms`, `generation_latency_ms`, and `end_to_end_latency_ms`, in addition to the answer and filename. Retrieval distances are diagnostic information; the current implementation does not apply a distance threshold to filter chunks.
+The `/ask` response includes `retrieval_query`, `retrieved_context` (page, text, vector distance, and reranker score for each returned chunk), `source_pages_or_sections`, candidate and deduplication counts, the active `reranker_backend`, and retrieval, reranking, generation, and end-to-end latency measurements. Retrieval distances are diagnostic information; the current implementation does not apply a distance threshold to filter chunks. `/retrieve` exposes retrieval and reranking diagnostics without making an LLM generation call.
 
 Summarization:
 
@@ -260,35 +261,51 @@ Use `RERANKER_BACKEND=onnx_int8` to require the quantized model (the first reran
 
 ## Evaluation
 
-The project was evaluated using a 10-question test set containing 8 answerable and 2 unanswerable questions. The recorded results from the final evaluation run were:
+### Retrieval quality
 
-| Evaluation area | Metric | Recorded result |
-|---|---|---:|
-| Retrieval | Page precision | 45.83% |
-| Retrieval | Expected-page recall | 100% |
-| Retrieval performance | Average retrieval latency | 79.624 ms |
-| Generation | Correctness | 60.72% |
-| Generation | Faithfulness | 91.1% |
-| Generation | Answer relevancy | 84.71% |
-| Refusal behavior | Correct refusal of unanswerable questions | 100% (2 of 2) |
-| Overall performance | Average end-to-end latency | 2,312.814 ms (about 2.31 seconds) |
+The current retrieval evaluation uses 24 SQL questions: 21 answerable and 3 unanswerable. The reranking candidate study compared the top 4 results before and after reranking.
 
-These are results from the project's small evaluation set and evaluation method, not results from a large external benchmark. The page precision result indicates that some retrieved pages were not relevant to the corresponding questions. The evaluation also showed that generation time was the largest contributor to end-to-end latency.
+| Metric | Similarity baseline | Reranked (12 candidates) |
+|---|---:|---:|
+| Precision@4 | 38.10% | 42.86% |
+| Recall@4 | 77.70% | 84.60% |
+| Mean Reciprocal Rank (MRR) | 82.94% | 97.62% |
+| Hit@1 | 71.43% | 95.24% |
+| NDCG@4 | 73.94% | 85.87% |
+
+The candidate-count comparison found that increasing the reranker input from 12 to 16 candidates did not improve these quality metrics. The application therefore uses up to 12 unique candidates before selecting the final 4 context chunks.
+
+### Reranker inference benchmark
+
+A controlled benchmark used the same 24 questions and 288 query-passage pairs, with 3 warm-up runs and 5 measured repeats. Timing includes tokenization and model inference, but excludes model loading, ONNX export, and quantization.
+
+| Backend | Average reranking latency | Precision@4 | Recall@4 | MRR |
+|---|---:|---:|---:|---:|
+| PyTorch FP32 | 5,039.96 ms | 42.86% | 84.60% | 97.62% |
+| ONNX Runtime FP32 | 4,362.21 ms | 42.86% | 84.60% | 97.62% |
+| ONNX Runtime dynamic INT8 | 1,404.96 ms | 42.86% | 84.60% | 97.62% |
+
+ONNX dynamic INT8 reduced average reranker latency by approximately 72.1% compared with PyTorch FP32 (about 3.59x faster) while preserving the measured retrieval metrics on this evaluation set.
+
+### Live integration check
+
+The integrated FastAPI endpoint was tested with the ONNX backend. The response reported `reranker_backend: onnxruntime_dynamic_int8`. A repeated live request recorded 5,459.63 ms reranking latency and 10,093.32 ms end-to-end latency. This single live request is an integration check, not a replacement for the controlled benchmark; live timings include application and runtime overhead.
+
+All results are from a small, document-specific evaluation set and should be treated as experimental rather than as a general performance guarantee.
 
 ## Limitations
 
 - Scanned or image-only PDFs may not yield extractable text; OCR is not currently part of the documented upload pipeline.
-- Retrieval can include irrelevant passages, so page precision can be improved.
+- Retrieval can still include irrelevant passages; evaluation on additional subjects and document types is needed.
 - Answer quality depends on the content and quality of the uploaded material and on the relevance of retrieved chunks.
 - LLM generation accounts for most of the measured response time.
 - The evaluation set contains only 10 questions, so the recorded metrics should be treated as preliminary.
 
 ## Future Improvements
 
-- Improve retrieval precision through better chunking experiments, metadata filtering, similarity thresholds, or reranking.
-- Expand the evaluation dataset with more documents and questions.
+- Expand the evaluation dataset across more subjects, document formats, and question types.
 - Add OCR support for scanned documents.
-- Improve response latency and generation efficiency.
+- Profile live reranking and end-to-end latency under repeated requests and different hardware.
 - Improve source attribution and document-level traceability.
 
 ## Security Notes
