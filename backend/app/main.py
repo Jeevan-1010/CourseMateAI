@@ -17,6 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
+from backend.app.database import check_database_connection
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -240,6 +241,17 @@ def health():
         "status": "healthy",
         "service": "CourseMate AI API",
     }
+
+@app.get("/db-health")
+def database_health():
+    try:
+        check_database_connection()
+        return {"status": "connected", "database": "Neon PostgreSQL"}
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Database connection failed. Check DATABASE_URL and Neon availability.",
+        )
 
 
 @app.post("/upload")
