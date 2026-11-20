@@ -150,39 +150,77 @@ def deduplicate_document_matches(matches, similarity_threshold: float = 0.92):
     return unique
 
 
+def split_query_aspects(query: str) -> list[str]:
+    """Extract searchable concepts from comma- and conjunction-separated questions."""
+    cleaned = re.sub(r"\s+", " ", query).strip()
+    parts = re.split(
+        r"\s*(?:,|;|\b(?:and|vs\.?|versus|plus|as well as|along with)\b)\s*",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    aspects = []
+    seen = set()
+    for part in parts:
+        aspect = re.sub(
+            r"^(?:please\s+)?(?:explain|describe|compare|discuss|define|what is|what are|tell me about)\s+",
+            "",
+            part.strip(),
+            flags=re.IGNORECASE,
+        ).strip(" ?.:")
+        normalized = aspect.casefold()
+        if len(aspect.split()) < 1 or len(normalized) < 3:
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            aspects.append(aspect)
+
+    return aspects if len(aspects) > 1 else []
+
+
 def retrieve_candidate_matches(vectorstore: Chroma, query: str):
-    """Combine similarity and diversity retrieval for broad/multi-part questions."""
+    """Merge whole-question, aspect-level, and diversity retrieval candidates."""
     similarity_matches = vectorstore.similarity_search_with_score(
         query,
         k=RERANK_CANDIDATE_K,
     )
 
+    aspects = split_query_aspects(query)
+    aspect_matches = []
+    for aspect in aspects:
+        aspect_matches.append(
+            vectorstore.similarity_search_with_score(
+                aspect,
+                k=max(6, RERANK_CANDIDATE_K // 3),
+            )
+        )
+
     query_is_broad = bool(
-        re.search(
+        aspects
+        or re.search(
             r"\b(all|types|different|compare|difference|and|examples|various|multiple)\b",
             query,
             flags=re.IGNORECASE,
         )
     )
 
-    if not query_is_broad:
-        raw_matches = similarity_matches
-    else:
+    ranked_sources = [similarity_matches, *aspect_matches]
+    if query_is_broad:
         diverse_documents = vectorstore.max_marginal_relevance_search(
             query,
             k=RERANK_CANDIDATE_K,
             fetch_k=max(RERANK_CANDIDATE_K * 3, 40),
             lambda_mult=0.65,
         )
+        ranked_sources.append([(document, None) for document in diverse_documents])
 
-        # Interleave both rankings so MMR contributes coverage without
-        # allowing either retriever to dominate the candidate pool.
-        raw_matches = []
-        for index in range(max(len(similarity_matches), len(diverse_documents))):
-            if index < len(similarity_matches):
-                raw_matches.append(similarity_matches[index])
-            if index < len(diverse_documents):
-                raw_matches.append((diverse_documents[index], None))
+    # Round-robin source rankings so each question aspect contributes candidates.
+    raw_matches = []
+    max_depth = max((len(source) for source in ranked_sources), default=0)
+    for index in range(max_depth):
+        for source in ranked_sources:
+            if index < len(source):
+                raw_matches.append(source[index])
 
     unique_matches = deduplicate_document_matches(raw_matches)
     return raw_matches, unique_matches
