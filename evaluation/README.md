@@ -1,9 +1,9 @@
 # Retrieval evaluation
 
-Use a manually reviewed, fixed test set for every before/after comparison.
+Use a manually reviewed, fixed test set for every before/after comparison. The historical SQL evaluation dataset (`evaluation/evaluation_dataset.json`) and its source PDF are local evaluation assets and are not currently included in the public repository. Supply your own dataset and matching uploaded/indexed document, or recreate the JSON file using the schema below, before running the example command.
 
 The evaluator supports both:
-- The project's existing `evaluation/evaluation_dataset.json` format:
+- The expected `evaluation/evaluation_dataset.json` format (create this file locally; it is not tracked in the repository):
   ```json
   {
     "document": "coursemate_test_guide.pdf",
