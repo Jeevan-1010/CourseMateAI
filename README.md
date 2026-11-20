@@ -2,6 +2,12 @@
 
 An AI-powered Retrieval-Augmented Generation (RAG) study assistant that lets students upload study materials, ask document-grounded questions, view extracted text, and generate study summaries.
 
+## Performance Highlights
+
+- **72.1% lower reranker inference latency:** ONNX Runtime dynamic INT8 reduced average reranker latency from **5,039.96 ms to 1,404.96 ms** compared with PyTorch FP32 in a controlled benchmark.
+- **No measured retrieval-quality loss:** PyTorch FP32, ONNX FP32, and ONNX dynamic INT8 produced identical **Precision@4 (42.86%)**, **Recall@4 (84.60%)**, and **MRR (97.62%)** on the 24-question evaluation set.
+- **Candidate-count tuning:** Reduced the reranker candidate pool from 16 to 12; the evaluation showed no improvement in retrieval metrics from using 16 candidates, so 12 was selected as the more efficient configuration. The 24.6% live-latency difference observed between separate runs is not presented as a controlled performance claim.
+
 ## Overview
 
 CourseMateAI combines a Streamlit interface with a FastAPI backend. Uploaded documents are processed, split into smaller chunks, embedded, and stored in a persistent ChromaDB vector database. Neon PostgreSQL, accessed through SQLAlchemy, stores document metadata, conversations, messages, and rolling conversation summaries so chat history and conversational context can be restored across application restarts. When a student asks a question, the application retrieves relevant chunks and supplies them as context to a language model hosted by Groq.
@@ -143,15 +149,24 @@ The main application files are organized as follows:
 CourseMateAI/
 ├── backend/
 │   ├── app/
-│   │   └── main.py          # FastAPI application and API endpoints
-│   ├── uploads/             # Uploaded documents (created at runtime)
-│   ├── Chroma-db/           # Persistent vector database (created at runtime)
+│   │   ├── database.py       # SQLAlchemy engine and database initialization
+│   │   ├── main.py           # FastAPI application, RAG pipeline, and API endpoints
+│   │   ├── models.py         # PostgreSQL ORM models
+│   │   └── persistence.py    # Document, conversation, message, and summary persistence
+│   ├── sample_notes.txt      # Sample study material
 │   └── requirements.txt     # Backend dependencies
-├── frontend.py              # Streamlit user interface
+├── evaluation/
+│   ├── README.md             # Retrieval evaluation instructions and dataset format
+│   ├── benchmark_reranker.py # PyTorch / ONNX reranker benchmark
+│   └── retrieval_eval.py     # Retrieval metrics and latency evaluator
+├── frontend.py               # Streamlit user interface
 ├── requirements.txt          # Project dependencies
-├── pyproject.toml            # Python project configuration
+├── pyproject.toml             # Python project configuration
+├── uv.lock                    # Locked dependency versions
 └── .gitignore
 ```
+
+The evaluation scripts expect a manually reviewed dataset at `evaluation/evaluation_dataset.json`, but that dataset is not currently tracked in the repository. Create it using the schema in `evaluation/README.md` and provide the matching study document in the running application before executing the evaluation commands. The reported 24-question SQL results were generated using a local evaluation dataset and source PDF that are not included in this repository.
 
 Uploaded document files, the local ChromaDB database, generated ONNX model artifacts, and environment files are intended to remain local and are excluded from version control. Neon PostgreSQL is used for relational persistence; the uploaded file contents and ChromaDB vector index are not stored in Neon.
 
@@ -315,7 +330,7 @@ All results are from a small, document-specific evaluation set and should be tre
 - Retrieval can still include irrelevant passages; evaluation on additional subjects and document types is needed.
 - Answer quality depends on the content and quality of the uploaded material and on the relevance of retrieved chunks.
 - LLM generation accounts for most of the measured response time.
-- The evaluation set contains only 10 questions, so the recorded metrics should be treated as preliminary.
+- The reported retrieval evaluation used 24 SQL questions (21 answerable and 3 unanswerable) against one study document. Results are document-specific and preliminary; the evaluation dataset and source PDF are not currently included in the repository.
 
 ## Future Improvements
 
