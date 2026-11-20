@@ -248,9 +248,14 @@ def database_health():
         check_database_connection()
         return {"status": "connected", "database": "Neon PostgreSQL"}
     except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Neon database health check failed."
+        )
         raise HTTPException(
             status_code=503,
-            detail="Database connection failed. Check DATABASE_URL and Neon availability.",
+            detail="Database connection failed. Check the FastAPI terminal for the underlying error.",
         )
 
 
