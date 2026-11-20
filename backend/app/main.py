@@ -17,7 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
-from backend.app.database import check_database_connection
+from backend.app.database import check_database_connection, initialize_database
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -36,6 +36,10 @@ app = FastAPI(
     title="CourseMate AI API",
     version="0.6.0",
 )
+
+@app.on_event("startup")
+def startup_initialize_database():
+    initialize_database()
 
 embeddings = HuggingFaceEmbeddings(
     model_name="sentence-transformers/paraphrase-MiniLM-L3-v2"
