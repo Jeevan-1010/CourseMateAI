@@ -17,6 +17,8 @@ for key, default in {
     "summaries": {},
     "extracted": {},
     "conversation_ids": {},
+    "restored_documents": set(),
+    "new_chat_documents": set(),
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -27,6 +29,19 @@ def error_detail(response):
         return response.json().get("detail", response.text)
     except ValueError:
         return response.text
+
+
+if not st.session_state.documents:
+    try:
+        response = requests.get(f"{API_URL}/documents", timeout=30)
+        if response.ok:
+            st.session_state.documents = [
+                item["filename"] for item in response.json().get("documents", [])
+            ]
+            if st.session_state.documents and st.session_state.selected_document not in st.session_state.documents:
+                st.session_state.selected_document = st.session_state.documents[0]
+    except requests.RequestException:
+        pass
 
 
 st.title("CourseMate AI")
@@ -74,6 +89,8 @@ with st.sidebar:
                         st.session_state.summaries.pop(filename, None)
                         st.session_state.extracted.pop(filename, None)
                         st.session_state.conversation_ids.pop(filename, None)
+                        st.session_state.restored_documents.discard(filename)
+                        st.session_state.new_chat_documents.add(filename)
 
                         st.success(f"Uploaded: {filename}")
                     else:
@@ -109,6 +126,7 @@ with st.sidebar:
         if st.button("New chat", use_container_width=True):
             st.session_state.chat_history[selected] = []
             st.session_state.conversation_ids.pop(selected, None)
+            st.session_state.new_chat_documents.add(selected)
             st.rerun()
 
         if st.button("Generate study summary", use_container_width=True):
@@ -148,6 +166,35 @@ with st.sidebar:
 
 
 filename = st.session_state.selected_document
+
+if (
+    filename
+    and filename not in st.session_state.restored_documents
+    and filename not in st.session_state.new_chat_documents
+):
+    try:
+        response = requests.get(
+            f"{API_URL}/documents/{filename}/conversations",
+            timeout=30,
+        )
+        if response.ok:
+            conversations = response.json().get("conversations", [])
+            if conversations:
+                latest = conversations[0]
+                detail = requests.get(
+                    f"{API_URL}/conversations/{latest['id']}",
+                    timeout=30,
+                )
+                if detail.ok:
+                    st.session_state.conversation_ids[filename] = latest["id"]
+                    st.session_state.chat_history[filename] = [
+                        {"role": item["role"], "content": item["content"]}
+                        for item in detail.json().get("messages", [])
+                        if item["role"] in {"user", "assistant"}
+                    ]
+    except requests.RequestException:
+        pass
+    st.session_state.restored_documents.add(filename)
 
 if not filename:
     st.subheader("Your study workspace")
