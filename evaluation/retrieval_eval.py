@@ -135,6 +135,13 @@ def main():
             "deduplicated_chunks_count": response.get(
                 "deduplicated_chunks_count"
             ),
+            "candidate_chunks_count": response.get("candidate_chunks_count"),
+            "unique_candidate_chunks_count": response.get(
+                "unique_candidate_chunks_count"
+            ),
+            "reranker_input_chunks_count": response.get(
+                "reranker_input_chunks_count"
+            ),
         })
 
         if relevant_pages:
@@ -176,6 +183,9 @@ def main():
         "reranking_latency_ms",
         "end_to_end_latency_ms",
         "deduplicated_chunks_count",
+        "candidate_chunks_count",
+        "unique_candidate_chunks_count",
+        "reranker_input_chunks_count",
     ]:
         values = [
             item[key] for item in results
