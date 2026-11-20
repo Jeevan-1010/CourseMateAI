@@ -19,7 +19,10 @@ The application retrieves the top 4 chunks for each question and passes them to 
 - Keep document embeddings in a persistent ChromaDB store.
 - Return source page or section references with question-answering responses.
 - Inspect the retrieved chunks, including their page numbers, text, and vector-search distances.
-- Measure retrieval, generation, and end-to-end question-answering latency.
+- Measure retrieval, reranking, generation, and end-to-end question-answering latency.
+- Deduplicate redundant retrieval candidates and use MMR diversity retrieval for broad or multi-part questions.
+- Rerank up to 12 candidate chunks with `BAAI/bge-reranker-v2-m3`, then send the top 4 chunks to the language model.
+- Support ONNX Runtime dynamic INT8 reranking on CPU, with automatic PyTorch fallback when the ONNX model file is unavailable.
 - Validate request bodies with Pydantic models and validate uploaded file types and sizes.
 
 ## Technology Stack
@@ -31,6 +34,7 @@ The application retrieves the top 4 chunks for each question and passes them to 
 | RAG orchestration | LangChain |
 | Vector database | ChromaDB |
 | Embedding model | Sentence Transformers - `sentence-transformers/paraphrase-MiniLM-L3-v2` |
+| Reranker | `BAAI/bge-reranker-v2-m3` (ONNX Runtime dynamic INT8 or PyTorch FP32 fallback) |
 | Language model | `openai/gpt-oss-20b`, accessed through the Groq API |
 | PDF extraction | pypdf |
 | DOCX extraction | python-docx |
@@ -45,7 +49,7 @@ The application retrieves the top 4 chunks for each question and passes them to 
 4. **Embed:** Sentence Transformers converts the chunks into numerical embeddings.
 5. **Store:** ChromaDB stores the embeddings, text, and document metadata persistently.
 6. **Understand the conversation:** When prior messages are available, the backend uses them to rewrite a follow-up question as a standalone retrieval query. Conversation history is used to resolve references, not as factual evidence.
-7. **Retrieve:** ChromaDB similarity search retrieves the top 4 chunks using the standalone query (or the original question when there is no history). The backend records each retrieved chunk's page, text, and distance for diagnostics; no distance-based filtering threshold is currently applied.
+7. **Retrieve and rerank:** ChromaDB similarity search, aspect-level retrieval, and MMR diversity retrieval produce candidates. Exact and near-duplicate chunks are removed, up to 12 unique candidates are scored by `BAAI/bge-reranker-v2-m3`, and the top 4 are passed to the language model.
 8. **Generate:** The retrieved context, latest question, and conversation history are passed to the Groq-hosted `openai/gpt-oss-20b` model. The prompt instructs the model to answer from the supplied document context and not invent missing information.
 9. **Respond:** The generated answer, retrieval query, retrieved chunks, source page or section references, and latency measurements are returned to the frontend.
 
@@ -224,11 +228,35 @@ The current backend configuration includes:
 | Embedding model | `sentence-transformers/paraphrase-MiniLM-L3-v2` |
 | Chunk size for indexing | 1,000 characters |
 | Chunk overlap for indexing | 200 characters |
-| Retrieved chunks for Q&A | 4 |
+| Unique reranker candidates for Q&A | Up to 12 |
+| Context chunks sent to the LLM | 4 |
+| Reranker | `BAAI/bge-reranker-v2-m3` |
+| Reranker max sequence length | 256 tokens |
+| Reranker batch size | 32 |
+| Reranker backend | `auto` (ONNX INT8 when the local model exists; otherwise PyTorch FP32) |
 | Vector database | Persistent ChromaDB |
 | LLM | `openai/gpt-oss-20b` through Groq |
 
 The summarization pipeline uses a separate text-splitting configuration to process longer documents before combining section summaries.
+
+### ONNX INT8 reranker
+
+The backend automatically uses the locally exported ONNX dynamic-INT8 model when this file exists:
+
+`evaluation/models/bge-reranker-v2-m3-onnx/int8/model_quantized.onnx`
+
+The model is excluded from Git because it is a generated binary artifact. Generate it with the benchmark workflow in `evaluation/benchmark_reranker.py` and keep it at the path above. The backend then loads the ONNX model with ONNX Runtime and downloads the matching tokenizer from Hugging Face on first use.
+
+Optional environment settings:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RERANKER_BACKEND` | `auto` | `auto`, `onnx_int8`, or `pytorch` |
+| `RERANKER_ONNX_MODEL_PATH` | `evaluation/models/bge-reranker-v2-m3-onnx/int8/model_quantized.onnx` | Override the ONNX model path |
+| `RERANKER_ONNX_THREADS` | `4` | ONNX Runtime CPU intra-op threads |
+
+Use `RERANKER_BACKEND=onnx_int8` to require the quantized model (startup of the first reranking request fails clearly if it is missing). Use `pytorch` to force the Sentence Transformers implementation. The default `auto` mode falls back to PyTorch if the ONNX file or its runtime cannot be loaded. API responses expose the active backend as `reranker_backend`.
+
 
 ## Evaluation
 
