@@ -16,6 +16,7 @@ for key, default in {
     "chat_history": {},
     "summaries": {},
     "extracted": {},
+    "conversation_ids": {},
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -72,6 +73,7 @@ with st.sidebar:
                         st.session_state.chat_history.pop(filename, None)
                         st.session_state.summaries.pop(filename, None)
                         st.session_state.extracted.pop(filename, None)
+                        st.session_state.conversation_ids.pop(filename, None)
 
                         st.success(f"Uploaded: {filename}")
                     else:
@@ -106,6 +108,7 @@ with st.sidebar:
 
         if st.button("New chat", use_container_width=True):
             st.session_state.chat_history[selected] = []
+            st.session_state.conversation_ids.pop(selected, None)
             st.rerun()
 
         if st.button("Generate study summary", use_container_width=True):
@@ -194,6 +197,7 @@ else:
                         json={
                             "filename": filename,
                             "question": question,
+                            "conversation_id": st.session_state.conversation_ids.get(filename),
                             # The current question was just appended above.
                             # Send only earlier turns as conversational context.
                             "history": [
@@ -213,6 +217,9 @@ else:
                         answer = result.get(
                             "answer",
                             "No answer was returned.",
+                        )
+                        st.session_state.conversation_ids[filename] = result.get(
+                            "conversation_id"
                         )
 
                         sources = [
