@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -106,16 +106,21 @@ def save_exchange(
         if conversation is None:
             raise ValueError("Conversation does not exist.")
 
+        user_message_time = datetime.now(timezone.utc)
+        assistant_message_time = user_message_time + timedelta(microseconds=1)
+
         session.add_all([
             Message(
                 conversation_id=uuid.UUID(conversation_id),
                 role="user",
                 content=question,
+                created_at=user_message_time,
             ),
             Message(
                 conversation_id=uuid.UUID(conversation_id),
                 role="assistant",
                 content=answer,
+                created_at=assistant_message_time,
             ),
         ])
         conversation.updated_at = datetime.now(timezone.utc)
