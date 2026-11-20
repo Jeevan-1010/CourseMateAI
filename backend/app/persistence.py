@@ -179,3 +179,67 @@ def get_conversation_messages(conversation_id: str):
             }
             for message in messages
         ]
+
+
+def get_messages_to_summarize(conversation_id: str, keep_recent: int = 8):
+    """Return the previous summary and messages older than the recent-history window."""
+    conversation_uuid = uuid.UUID(conversation_id)
+
+    with _session() as session:
+        summary_record = session.scalar(
+            select(ConversationSummary).where(
+                ConversationSummary.conversation_id == conversation_uuid
+            )
+        )
+        messages = session.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_uuid)
+            .order_by(Message.created_at.asc(), Message.id.asc())
+        ).all()
+
+        eligible = messages[:-keep_recent] if len(messages) > keep_recent else []
+        last_summarized_id = (
+            summary_record.last_summarized_message_id if summary_record else None
+        )
+
+        if last_summarized_id is not None:
+            for index, message in enumerate(eligible):
+                if message.id == last_summarized_id:
+                    eligible = eligible[index + 1:]
+                    break
+
+        return (
+            summary_record.summary if summary_record else "",
+            [
+                {
+                    "id": str(message.id),
+                    "role": message.role,
+                    "content": message.content,
+                }
+                for message in eligible
+            ],
+        )
+
+
+def save_conversation_summary(
+    conversation_id: str, summary: str, last_message_id: str
+) -> None:
+    with _session() as session:
+        conversation_uuid = uuid.UUID(conversation_id)
+        summary_record = session.scalar(
+            select(ConversationSummary).where(
+                ConversationSummary.conversation_id == conversation_uuid
+            )
+        )
+
+        if summary_record is None:
+            summary_record = ConversationSummary(
+                conversation_id=conversation_uuid,
+                summary=summary,
+            )
+            session.add(summary_record)
+        else:
+            summary_record.summary = summary
+
+        summary_record.last_summarized_message_id = uuid.UUID(last_message_id)
+        session.commit()
