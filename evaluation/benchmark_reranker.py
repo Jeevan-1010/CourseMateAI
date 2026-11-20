@@ -369,6 +369,7 @@ def main():
         int8_model_path,
         tokenizer,
         args.threads,
+        args.max_length,
     )
     onnx_int8_result = benchmark_variant(
         "onnxruntime_dynamic_int8",
