@@ -4,7 +4,7 @@ An AI-powered Retrieval-Augmented Generation (RAG) study assistant that lets stu
 
 ## Overview
 
-CourseMateAI combines a Streamlit interface with a FastAPI backend. Uploaded documents are processed, split into smaller chunks, embedded, and stored in a persistent ChromaDB vector database. When a student asks a question, the application retrieves relevant chunks and supplies them as context to a language model hosted by Groq.
+CourseMateAI combines a Streamlit interface with a FastAPI backend. Uploaded documents are processed, split into smaller chunks, embedded, and stored in a persistent ChromaDB vector database. Neon PostgreSQL, accessed through SQLAlchemy, stores document metadata, conversations, messages, and rolling conversation summaries so chat history and conversational context can be restored across application restarts. When a student asks a question, the application retrieves relevant chunks and supplies them as context to a language model hosted by Groq.
 
 The application retrieves the top 4 chunks for each question and passes them to the language model as document context. It does not apply a similarity-distance threshold to filter those results. The model is instructed to answer only when the supplied context supports an answer; otherwise, it should state that the uploaded document does not provide enough information. This refusal behavior happens at the answer-generation stage, not because retrieval returns zero chunks.
 
@@ -16,7 +16,9 @@ The application retrieves the top 4 chunks for each question and passes them to 
 - Maintain conversational context across follow-up questions within the current chat session.
 - Rewrite context-dependent follow-up questions into standalone retrieval queries before searching the document.
 - Generate study summaries from uploaded material.
-- Keep document embeddings in a persistent ChromaDB store.
+- Keep document embeddings in a persistent ChromaDB vector store.
+- Persist document metadata, conversations, messages, and rolling conversation summaries in Neon PostgreSQL.
+- Restore saved conversations and their context, combining a stored summary with the latest 8 messages to support longer-running chats.
 - Return source page or section references with question-answering responses.
 - Inspect the retrieved chunks, including their page numbers, text, and vector-search distances.
 - Measure retrieval, reranking, generation, and end-to-end question-answering latency.
@@ -33,6 +35,7 @@ The application retrieves the top 4 chunks for each question and passes them to 
 | Backend API | FastAPI |
 | RAG orchestration | LangChain |
 | Vector database | ChromaDB |
+| Persistent relational database | Neon PostgreSQL, accessed through SQLAlchemy |
 | Embedding model | Sentence Transformers - `sentence-transformers/paraphrase-MiniLM-L3-v2` |
 | Reranker | `BAAI/bge-reranker-v2-m3` (ONNX Runtime dynamic INT8 or PyTorch FP32 fallback) |
 | Language model | `openai/gpt-oss-20b`, accessed through the Groq API |
@@ -50,8 +53,9 @@ The application retrieves the top 4 chunks for each question and passes them to 
 5. **Store:** ChromaDB stores the embeddings, text, and document metadata persistently.
 6. **Understand the conversation:** When prior messages are available, the backend uses them to rewrite a follow-up question as a standalone retrieval query. Conversation history is used to resolve references, not as factual evidence.
 7. **Retrieve and rerank:** ChromaDB similarity search, aspect-level retrieval, and MMR diversity retrieval produce candidates. Exact and near-duplicate chunks are removed, up to 12 unique candidates are scored by `BAAI/bge-reranker-v2-m3`, and the top 4 are passed to the language model.
-8. **Generate:** The retrieved context, latest question, and conversation history are passed to the Groq-hosted `openai/gpt-oss-20b` model. The prompt instructs the model to answer from the supplied document context and not invent missing information.
-9. **Respond:** The generated answer, retrieval query, retrieved chunks, source page or section references, and latency measurements are returned to the frontend.
+8. **Persist conversational memory:** Neon PostgreSQL stores conversations and message exchanges. Older messages are periodically condensed into a rolling summary, while the latest 8 messages are retained as recent context. On a returning session, the summary and recent messages are loaded from the database.
+9. **Generate:** The retrieved context, latest question, and conversation history are passed to the Groq-hosted `openai/gpt-oss-20b` model. The prompt instructs the model to answer from the supplied document context and not invent missing information.
+10. **Respond:** The generated answer, retrieval query, retrieved chunks, source page or section references, and latency measurements are returned to the frontend.
 
 ### Architecture
 
@@ -73,7 +77,12 @@ FastAPI backend (backend/app/main.py)
    |
    +--> ChromaDB persistent vector store
    |
-   +--> Similarity search (top 4 chunks)
+   +--> MMR retrieval, deduplication, and reranking
+   |
+   +--> Neon PostgreSQL (SQLAlchemy)
+   |      +--> Document metadata
+   |      +--> Conversations and messages
+   |      +--> Rolling conversation summaries
    |
    +--> Groq API: openai/gpt-oss-20b
    |
@@ -87,7 +96,10 @@ The FastAPI backend exposes the following endpoints:
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/health` | Returns the API health status. |
+| `GET` | `/health` | Returns the API health status, including the Neon PostgreSQL connection check. |
+| `GET` | `/documents` | Lists persisted document metadata. |
+| `GET` | `/documents/{filename}/conversations` | Lists saved conversations associated with a document. |
+| `GET` | `/conversations/{conversation_id}` | Restores the messages for a saved conversation. |
 | `POST` | `/upload` | Uploads and validates a PDF, TXT, or DOCX file. Send the file as multipart form data using the `file` field. |
 | `GET` | `/extract/{filename}` | Extracts the document text and returns its pages or sections. |
 | `POST` | `/ask` | Answers a question using retrieved document context. |
@@ -141,7 +153,7 @@ CourseMateAI/
 └── .gitignore
 ```
 
-Uploaded documents, the local ChromaDB database, and environment files are intended to remain local and are excluded from version control.
+Uploaded document files, the local ChromaDB database, generated ONNX model artifacts, and environment files are intended to remain local and are excluded from version control. Neon PostgreSQL is used for relational persistence; the uploaded file contents and ChromaDB vector index are not stored in Neon.
 
 ## Getting Started
 
@@ -149,6 +161,7 @@ Uploaded documents, the local ChromaDB database, and environment files are inten
 
 - Python 3.12 or later.
 - A Groq API key.
+- A Neon PostgreSQL database and its connection URL.
 - Git.
 
 ### 1. Clone the repository
@@ -189,9 +202,10 @@ Create a `.env` file in the repository root:
 
 ```env
 GROQ_API_KEY=your_groq_api_key
+DATABASE_URL=postgresql+psycopg://username:password@host/database?sslmode=require
 ```
 
-Do not commit your `.env` file or expose your API key.
+Set `DATABASE_URL` to your Neon connection string using the SQLAlchemy-compatible `postgresql+psycopg://` scheme. Do not commit your `.env` file, database credentials, or API key.
 
 ### 5. Start the FastAPI backend
 
@@ -236,6 +250,8 @@ The current backend configuration includes:
 | Reranker batch size | 32 |
 | Reranker backend | `auto` (ONNX INT8 when the local model exists; otherwise PyTorch FP32) |
 | Vector database | Persistent ChromaDB |
+| Relational persistence | Neon PostgreSQL via SQLAlchemy |
+| Conversation memory | Persisted message history and rolling summaries; latest 8 messages loaded with the summary |
 | LLM | `openai/gpt-oss-20b` through Groq |
 
 The summarization pipeline uses a separate text-splitting configuration to process longer documents before combining section summaries.
