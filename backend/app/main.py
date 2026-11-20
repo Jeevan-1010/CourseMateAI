@@ -858,6 +858,11 @@ def ask_question(request: QuestionRequest):
         raise
 
     except Exception as error:
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "Question answering failed for question: %s", question
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Question answering failed: {type(error).__name__}",
