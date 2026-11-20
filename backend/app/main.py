@@ -657,20 +657,21 @@ def retrieve_only(request: RetrievalRequest):
         }
         reranking_ms = (time.perf_counter() - reranking_start) * 1000
 
+        rerank_scores = {id(doc): score for doc, score in ranked}
         debug_candidates = [
             {
                 "retrieval_rank": rank,
                 "page": doc.metadata.get("page", 0) + 1,
                 "text": doc.page_content,
                 "distance": distances[id(doc)],
-                "rerank_score": score,
+                "rerank_score": rerank_scores[id(doc)],
                 "pair_token_count": len(
                     get_reranker().tokenizer(
                         question, doc.page_content, truncation=False
                     )["input_ids"]
                 ),
             }
-            for rank, (doc, score) in enumerate(ranked, start=1)
+            for rank, (doc, distance) in enumerate(candidates, start=1)
         ]
         selected = ranked[:RERANK_FINAL_K]
         context = [
