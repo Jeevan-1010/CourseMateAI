@@ -117,14 +117,16 @@ def main():
             f"rerank={response.get('reranking_latency_ms')} ms"
         )
 
-    metric_keys = [
-        f"precision_at_{args.k}",
-        f"recall_at_{args.k}",
-        "reciprocal_rank",
-    ]
     summary = {
-        key: statistics.mean(item[key] for item in results)
-        for key in metric_keys
+        f"precision_at_{args.k}": statistics.mean(
+            item[f"precision_at_{args.k}"] for item in results
+        ),
+        f"recall_at_{args.k}": statistics.mean(
+            item[f"recall_at_{args.k}"] for item in results
+        ),
+        "mrr": statistics.mean(
+            item["reciprocal_rank"] for item in results
+        ),
     }
 
     for key in [
