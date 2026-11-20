@@ -1,5 +1,4 @@
 import argparse
-import copy
 import gc
 import json
 import math
@@ -215,7 +214,7 @@ def export_and_quantize(model_name: str, model_dir: Path, force_export: bool):
     return fp32_model_path, int8_model_path
 
 
-def make_ort_predictor(model_path: Path, tokenizer, threads: int):
+def make_ort_predictor(model_path: Path, tokenizer, threads: int, max_length: int):
     import onnxruntime as ort
 
     options = ort.SessionOptions()
@@ -238,7 +237,7 @@ def make_ort_predictor(model_path: Path, tokenizer, threads: int):
             passages,
             padding=True,
             truncation=True,
-            max_length=256,
+            max_length=max_length,
             return_tensors="np",
         )
         feeds = {
@@ -344,6 +343,7 @@ def main():
         fp32_model_path,
         tokenizer,
         args.threads,
+        args.max_length,
     )
     onnx_fp32_result = benchmark_variant(
         "onnxruntime_fp32",
