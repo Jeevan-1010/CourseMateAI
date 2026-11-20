@@ -1,3 +1,6 @@
+import uuid
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -50,7 +53,7 @@ def get_document_id(filename: str) -> str | None:
 def create_conversation(document_id: str, title: str | None = None) -> str:
     with _session() as session:
         conversation = Conversation(
-            document_id=document_id,
+            document_id=uuid.UUID(document_id),
             title=title or "New conversation",
         )
         session.add(conversation)
@@ -63,7 +66,7 @@ def conversation_belongs_to_document(
     conversation_id: str, document_id: str
 ) -> bool:
     with _session() as session:
-        conversation = session.get(Conversation, conversation_id)
+        conversation = session.get(Conversation, uuid.UUID(conversation_id))
         return bool(
             conversation and str(conversation.document_id) == document_id
         )
@@ -71,18 +74,18 @@ def conversation_belongs_to_document(
 
 def load_conversation_context(conversation_id: str, limit: int = 8):
     with _session() as session:
-        conversation = session.get(Conversation, conversation_id)
+        conversation = session.get(Conversation, uuid.UUID(conversation_id))
         if conversation is None:
             return None
 
         summary_record = session.scalar(
             select(ConversationSummary).where(
-                ConversationSummary.conversation_id == conversation_id
+                ConversationSummary.conversation_id == uuid.UUID(conversation_id)
             )
         )
         messages = session.scalars(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(Message.conversation_id == uuid.UUID(conversation_id))
             .order_by(Message.created_at.desc())
             .limit(limit)
         ).all()
@@ -99,25 +102,23 @@ def save_exchange(
     conversation_id: str, question: str, answer: str
 ) -> None:
     with _session() as session:
-        conversation = session.get(Conversation, conversation_id)
+        conversation = session.get(Conversation, uuid.UUID(conversation_id))
         if conversation is None:
             raise ValueError("Conversation does not exist.")
 
         session.add_all([
             Message(
-                conversation_id=conversation_id,
+                conversation_id=uuid.UUID(conversation_id),
                 role="user",
                 content=question,
             ),
             Message(
-                conversation_id=conversation_id,
+                conversation_id=uuid.UUID(conversation_id),
                 role="assistant",
                 content=answer,
             ),
         ])
-        conversation.updated_at = __import__("datetime").datetime.now(
-            __import__("datetime").timezone.utc
-        )
+        conversation.updated_at = datetime.now(timezone.utc)
         session.commit()
 
 
@@ -161,12 +162,12 @@ def list_conversations(document_id: str):
 
 def get_conversation_messages(conversation_id: str):
     with _session() as session:
-        conversation = session.get(Conversation, conversation_id)
+        conversation = session.get(Conversation, uuid.UUID(conversation_id))
         if conversation is None:
             return None
         messages = session.scalars(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(Message.conversation_id == uuid.UUID(conversation_id))
             .order_by(Message.created_at.asc())
         ).all()
         return [
