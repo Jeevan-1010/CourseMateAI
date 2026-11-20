@@ -28,6 +28,8 @@ from backend.app.persistence import (
     save_document,
     save_exchange,
     get_conversation_messages,
+    get_messages_to_summarize,
+    save_conversation_summary,
 )
 
 
@@ -249,6 +251,51 @@ def get_language_model():
         temperature=0,
         api_key=api_key,
     )
+
+
+def update_conversation_summary(conversation_id: str, model) -> None:
+    previous_summary, older_messages = get_messages_to_summarize(
+        conversation_id, keep_recent=8
+    )
+
+    if not older_messages:
+        return
+
+    messages_text = "\n".join(
+        f"{item['role'].upper()}: {item['content']}"
+        for item in older_messages
+    )
+
+    summary_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            "Update a compact memory of this student's conversation. "
+            "Combine the existing summary with the newly supplied older "
+            "messages. Preserve the student's goals, preferences, key "
+            "questions, established context, important explanations, and "
+            "unresolved references needed to understand future follow-ups. "
+            "Remove repetition and outdated details. Do not invent facts. "
+            "Return only the updated summary.",
+        ),
+        (
+            "human",
+            "Existing summary:\n{previous_summary}\n\n"
+            "New older messages to incorporate:\n{messages}",
+        ),
+    ])
+
+    result = (summary_prompt | model).invoke({
+        "previous_summary": previous_summary or "No previous summary.",
+        "messages": messages_text,
+    })
+    updated_summary = result.content.strip()
+
+    if updated_summary:
+        save_conversation_summary(
+            conversation_id,
+            updated_summary,
+            older_messages[-1]["id"],
+        )
 
 
 @app.get("/health")
@@ -570,6 +617,20 @@ def ask_question(request: QuestionRequest):
         ) * 1000
 
         save_exchange(conversation_id, question, response.content)
+
+        # Summarize older turns while retaining the latest 8 messages verbatim.
+        try:
+            update_conversation_summary(conversation_id, model)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Conversation summary update failed."
+            )
+
+        end_to_end_latency_ms = (
+            time.perf_counter() - request_start
+        ) * 1000
 
         return {
             "filename": request.filename,
