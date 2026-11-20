@@ -1,5 +1,6 @@
 
 import hashlib
+import os
 import re
 import time
 from functools import lru_cache
@@ -73,14 +74,114 @@ RERANK_MAX_LENGTH = 256
 RERANK_BATCH_SIZE = 32
 
 
-@lru_cache(maxsize=1)
-def get_reranker() -> CrossEncoder:
-    # Study chunks are limited to 1,000 characters. A 256-token cap limits
-    # transformer work while retaining room for most chunks.
-    return CrossEncoder(
-        RERANKER_MODEL_NAME,
-        max_length=RERANK_MAX_LENGTH,
+RERANKER_BACKEND = os.getenv("RERANKER_BACKEND", "auto").strip().lower()
+RERANKER_ONNX_MODEL_PATH = Path(
+    os.getenv(
+        "RERANKER_ONNX_MODEL_PATH",
+        str(BASE_DIR / "evaluation" / "models" / "bge-reranker-v2-m3-onnx" / "int8" / "model_quantized.onnx"),
     )
+)
+RERANKER_ONNX_THREADS = int(os.getenv("RERANKER_ONNX_THREADS", "4"))
+
+
+class OnnxInt8Reranker:
+    """CPU ONNX Runtime dynamic-INT8 cross-encoder."""
+
+    backend = "onnxruntime_dynamic_int8"
+
+    def __init__(self, model_path: Path):
+        import onnxruntime as ort
+        from transformers import AutoTokenizer
+
+        self.tokenizer = AutoTokenizer.from_pretrained(RERANKER_MODEL_NAME)
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = RERANKER_ONNX_THREADS
+        options.inter_op_num_threads = 1
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.session = ort.InferenceSession(
+            str(model_path),
+            sess_options=options,
+            providers=["CPUExecutionProvider"],
+        )
+        self.input_names = {item.name for item in self.session.get_inputs()}
+
+    def predict(self, pairs, batch_size=RERANK_BATCH_SIZE, show_progress_bar=False):
+        import numpy as np
+
+        scores = []
+        for start in range(0, len(pairs), batch_size):
+            batch = pairs[start:start + batch_size]
+            encoded = self.tokenizer(
+                [pair[0] for pair in batch],
+                [pair[1] for pair in batch],
+                padding=True,
+                truncation=True,
+                max_length=RERANK_MAX_LENGTH,
+                return_tensors="np",
+            )
+            feeds = {
+                name: value
+                for name, value in encoded.items()
+                if name in self.input_names
+            }
+            if "token_type_ids" in self.input_names and "token_type_ids" not in feeds:
+                feeds["token_type_ids"] = np.zeros_like(encoded["input_ids"])
+            missing = self.input_names - set(feeds)
+            if missing:
+                raise RuntimeError(
+                    "ONNX reranker requires unsupported inputs: "
+                    + ", ".join(sorted(missing))
+                )
+            outputs = self.session.run(None, feeds)
+            scores.extend(np.asarray(outputs[0]).reshape(-1).tolist())
+        return np.asarray(scores)
+
+
+class PyTorchReranker:
+    """Sentence-Transformers fallback used when the ONNX artifact is unavailable."""
+
+    backend = "pytorch_fp32"
+
+    def __init__(self):
+        self.model = CrossEncoder(
+            RERANKER_MODEL_NAME,
+            max_length=RERANK_MAX_LENGTH,
+        )
+        self.tokenizer = self.model.tokenizer
+
+    def predict(self, pairs, batch_size=RERANK_BATCH_SIZE, show_progress_bar=False):
+        return self.model.predict(
+            pairs,
+            batch_size=batch_size,
+            show_progress_bar=show_progress_bar,
+            convert_to_numpy=True,
+        )
+
+
+@lru_cache(maxsize=1)
+def get_reranker():
+    if RERANKER_BACKEND not in {"auto", "onnx_int8", "pytorch"}:
+        raise ValueError(
+            "RERANKER_BACKEND must be 'auto', 'onnx_int8', or 'pytorch'."
+        )
+
+    if RERANKER_BACKEND in {"auto", "onnx_int8"}:
+        if RERANKER_ONNX_MODEL_PATH.is_file():
+            try:
+                return OnnxInt8Reranker(RERANKER_ONNX_MODEL_PATH)
+            except Exception:
+                if RERANKER_BACKEND == "onnx_int8":
+                    raise
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Could not initialize ONNX INT8 reranker; falling back to PyTorch."
+                )
+        elif RERANKER_BACKEND == "onnx_int8":
+            raise FileNotFoundError(
+                f"ONNX INT8 model not found: {RERANKER_ONNX_MODEL_PATH}"
+            )
+
+    return PyTorchReranker()
 
 
 def rerank_documents(query: str, documents: list[Document]):
@@ -693,6 +794,7 @@ def retrieve_only(request: RetrievalRequest):
             "unique_candidate_chunks_count": len(unique_matches),
             "deduplicated_chunks_count": len(raw_matches) - len(unique_matches),
             "reranker_input_chunks_count": len(candidates),
+            "reranker_backend": get_reranker().backend,
             "reranked_chunks_count": len(selected),
             "retrieval_latency_ms": round(retrieval_ms, 2),
             "reranking_latency_ms": round(reranking_ms, 2),
@@ -926,6 +1028,7 @@ def ask_question(request: QuestionRequest):
                 for doc, rerank_score, distance in selected_matches
             ],
             "reranker_model": RERANKER_MODEL_NAME,
+            "reranker_backend": get_reranker().backend,
             "reranker_max_length": RERANK_MAX_LENGTH,
             "reranker_batch_size": RERANK_BATCH_SIZE,
             "candidate_chunks_count": len(raw_candidate_matches),
