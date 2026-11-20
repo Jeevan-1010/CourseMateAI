@@ -67,7 +67,7 @@ splitter = RecursiveCharacterTextSplitter(
 )
 
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
-RERANK_CANDIDATE_K = 16
+RERANK_CANDIDATE_K = 12
 RERANK_FINAL_K = 4
 RERANK_MAX_LENGTH = 256
 RERANK_BATCH_SIZE = 32
