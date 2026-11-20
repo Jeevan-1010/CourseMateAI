@@ -18,6 +18,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
 from backend.app.database import check_database_connection, initialize_database
+from backend.app.persistence import (\n    conversation_belongs_to_document,\n    create_conversation,\n    get_document_id,\n    list_conversations,\n    list_documents,\n    load_conversation_context,\n    save_document,\n    save_exchange,\n    get_conversation_messages,\n)
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -246,7 +247,7 @@ def health():
         "service": "CourseMate AI API",
     }
 
-@app.get("/db-health")
+@app.get("/documents")\ndef get_documents():\n    return {"documents": list_documents()}\n\n\n@app.get("/documents/{filename}/conversations")\ndef get_document_conversations(filename: str):\n    document_id = get_document_id(filename)\n    if document_id is None:\n        raise HTTPException(status_code=404, detail="Document not found.")\n    return {"conversations": list_conversations(document_id)}\n\n\n@app.get("/conversations/{conversation_id}")\ndef get_conversation(conversation_id: str):\n    messages = get_conversation_messages(conversation_id)\n    if messages is None:\n        raise HTTPException(status_code=404, detail="Conversation not found.")\n    return {"conversation_id": conversation_id, "messages": messages}\n\n\n@app.get("/db-health")
 def database_health():
     try:
         check_database_connection()
@@ -381,25 +382,52 @@ def ask_question(request: QuestionRequest):
             detail="Enter a question.",
         )
 
-    # Keep a bounded amount of prior conversation to control prompt size.
-    history = request.history[-24:]
-
-    if any(not message.content.strip() for message in history):
-        raise HTTPException(
-            status_code=400,
-            detail="Conversation history cannot contain empty messages.",
-        )
-
-    # Convert API roles to the role names expected by LangChain prompts.
-    chat_history = [
-        (
-            "human" if message.role == "user" else "ai",
-            message.content,
-        )
-        for message in history
-    ]
-
     try:
+        document_id = get_document_id(request.filename)
+        if document_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document record not found. Upload the document again.",
+            )
+
+        if request.conversation_id:
+            conversation_id = request.conversation_id
+            if not conversation_belongs_to_document(
+                conversation_id, document_id
+            ):
+                raise HTTPException(
+                    status_code=404,
+                    detail="Conversation not found for this document.",
+                )
+        else:
+            conversation_id = create_conversation(
+                document_id, title=question[:80]
+            )
+
+        stored_context = load_conversation_context(conversation_id)
+        if stored_context is None:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+        summary, stored_history = stored_context
+        # The database is the source of truth; keep only the latest 8 messages.
+        history = stored_history
+        if not history and request.history:
+            history = [
+                {"role": item.role, "content": item.content}
+                for item in request.history[-8:]
+                if item.content.strip()
+            ]
+
+        chat_history = [
+            ("human" if item["role"] == "user" else "ai", item["content"])
+            for item in history
+        ]
+        if summary:
+            chat_history.insert(
+                0,
+                ("system", "Earlier conversation summary: " + summary),
+            )
+
         model = get_language_model()
         retrieval_query = question
 
