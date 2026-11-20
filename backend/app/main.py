@@ -623,6 +623,91 @@ def extract_document(filename: str):
     }
 
 
+class RetrievalRequest(BaseModel):
+    filename: str
+    question: str
+
+
+@app.post("/retrieve")
+def retrieve_only(request: RetrievalRequest):
+    """Run document retrieval and reranking without calling the language model."""
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Enter a question.")
+
+    try:
+        document_id = get_document_id(request.filename)
+        if document_id is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Document record not found. Upload the document again.",
+            )
+
+        vectorstore = get_vectorstore(request.filename)
+        retrieval_start = time.perf_counter()
+        raw_matches, unique_matches = retrieve_candidate_matches(vectorstore, question)
+        candidates = unique_matches[:RERANK_CANDIDATE_K]
+        retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
+
+        reranking_start = time.perf_counter()
+        ranked = rerank_documents(question, [doc for doc, distance in candidates])
+        distances = {
+            id(doc): float(distance) if distance is not None else None
+            for doc, distance in candidates
+        }
+        reranking_ms = (time.perf_counter() - reranking_start) * 1000
+
+        debug_candidates = [
+            {
+                "retrieval_rank": rank,
+                "page": doc.metadata.get("page", 0) + 1,
+                "text": doc.page_content,
+                "distance": distances[id(doc)],
+                "rerank_score": score,
+                "pair_token_count": len(
+                    get_reranker().tokenizer(
+                        question, doc.page_content, truncation=False
+                    )["input_ids"]
+                ),
+            }
+            for rank, (doc, score) in enumerate(ranked, start=1)
+        ]
+        selected = ranked[:RERANK_FINAL_K]
+        context = [
+            {
+                "page": doc.metadata.get("page", 0) + 1,
+                "text": doc.page_content,
+                "distance": distances[id(doc)],
+                "rerank_score": score,
+            }
+            for doc, score in selected
+        ]
+        return {
+            "filename": request.filename,
+            "question": question,
+            "retrieval_query": question,
+            "retrieved_context": context,
+            "retrieval_candidates": debug_candidates,
+            "candidate_chunks_count": len(raw_matches),
+            "unique_candidate_chunks_count": len(unique_matches),
+            "deduplicated_chunks_count": len(raw_matches) - len(unique_matches),
+            "reranker_input_chunks_count": len(candidates),
+            "reranked_chunks_count": len(selected),
+            "retrieval_latency_ms": round(retrieval_ms, 2),
+            "reranking_latency_ms": round(reranking_ms, 2),
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Retrieval-only request failed for question: %s", question
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Retrieval failed: {type(error).__name__}"
+        )
+
+
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
     request_start = time.perf_counter()
