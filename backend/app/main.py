@@ -792,6 +792,9 @@ def ask_question(request: QuestionRequest):
                 }
                 for doc, rerank_score, distance in selected_matches
             ],
+            "reranker_model": RERANKER_MODEL_NAME,
+            "reranker_max_length": RERANK_MAX_LENGTH,
+            "reranker_batch_size": RERANK_BATCH_SIZE,
             "candidate_chunks_count": len(raw_candidate_matches),
             "unique_candidate_chunks_count": len(unique_candidate_matches),
             "deduplicated_chunks_count": (
