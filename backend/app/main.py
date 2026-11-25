@@ -331,6 +331,39 @@ def retrieve_candidate_matches(vectorstore: Chroma, query: str):
     return raw_matches, unique_matches
 
 
+def retrieve_multi_document_candidates(filenames: list[str], query: str):
+    """Retrieve from each document collection and interleave candidates by document."""
+    document_results = []
+    for filename in filenames:
+        vectorstore = get_vectorstore(filename)
+        raw_matches, unique_matches = retrieve_candidate_matches(
+            vectorstore, query
+        )
+        document_results.append((raw_matches, unique_matches))
+
+    raw_matches = []
+    unique_matches = []
+    max_raw_depth = max(
+        (len(raw) for raw, _ in document_results), default=0
+    )
+    max_unique_depth = max(
+        (len(unique) for _, unique in document_results), default=0
+    )
+
+    # Interleave documents so one large document cannot occupy every candidate slot.
+    for index in range(max_raw_depth):
+        for raw, _ in document_results:
+            if index < len(raw):
+                raw_matches.append(raw[index])
+
+    for index in range(max_unique_depth):
+        for _, unique in document_results:
+            if index < len(unique):
+                unique_matches.append(unique[index])
+
+    return raw_matches, unique_matches
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -338,6 +371,7 @@ class ChatMessage(BaseModel):
 
 class QuestionRequest(BaseModel):
     filename: str
+    filenames: list[str] | None = None
     question: str
     conversation_id: str | None = None
     history: list[ChatMessage] = Field(default_factory=list)
@@ -823,12 +857,22 @@ def ask_question(request: QuestionRequest):
         )
 
     try:
+        filenames = list(dict.fromkeys(request.filenames or [request.filename]))
+        if request.filename not in filenames:
+            filenames.insert(0, request.filename)
+
+        for selected_filename in filenames:
+            if get_document_id(selected_filename) is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"Document record not found for '{selected_filename}'. "
+                        "Upload the document again."
+                    ),
+                )
+
+        # Conversations remain associated with the selected workspace document.
         document_id = get_document_id(request.filename)
-        if document_id is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Document record not found. Upload the document again.",
-            )
 
         if request.conversation_id:
             conversation_id = request.conversation_id
@@ -893,14 +937,12 @@ def ask_question(request: QuestionRequest):
             })
             retrieval_query = rewritten.content.strip() or question
 
-        vectorstore = get_vectorstore(request.filename)
         retrieval_start = time.perf_counter()
 
-        # Combine semantic similarity with MMR diversity for broad questions,
-        # then remove redundant chunks before expensive cross-encoder scoring.
-        raw_candidate_matches, unique_candidate_matches = retrieve_candidate_matches(
-            vectorstore,
-            retrieval_query,
+        # Search every selected document collection, then interleave candidates
+        # before reranking so each document gets a chance to contribute.
+        raw_candidate_matches, unique_candidate_matches = (
+            retrieve_multi_document_candidates(filenames, retrieval_query)
         )
         candidate_matches = unique_candidate_matches[:RERANK_CANDIDATE_K]
 
@@ -949,7 +991,8 @@ def ask_question(request: QuestionRequest):
             )
 
         context = "\n\n".join(
-            f"Source section {doc.metadata.get('page', 0) + 1}:\n"
+            f"Source document: {doc.metadata.get('source', 'Unknown')} "
+            f"(section {doc.metadata.get('page', 0) + 1}):\n"
             f"{doc.page_content}"
             for doc in matches
         )
@@ -988,7 +1031,10 @@ def ask_question(request: QuestionRequest):
         ) * 1000
 
         source_sections = sorted({
-            doc.metadata.get("page", 0) + 1
+            (
+                doc.metadata.get("source", request.filename),
+                doc.metadata.get("page", 0) + 1,
+            )
             for doc in matches
         })
 
@@ -1014,12 +1060,14 @@ def ask_question(request: QuestionRequest):
 
         result = {
             "filename": request.filename,
+            "filenames": filenames,
             "conversation_id": conversation_id,
             "question": question,
             "retrieval_query": retrieval_query,
             "answer": response.content,
             "retrieved_context": [
                 {
+                    "filename": doc.metadata.get("source", request.filename),
                     "page": doc.metadata.get("page", 0) + 1,
                     "text": doc.page_content,
                     "distance": round(distance, 4) if distance is not None else None,
@@ -1039,8 +1087,8 @@ def ask_question(request: QuestionRequest):
             "reranker_input_chunks_count": len(candidate_matches),
             "reranked_chunks_count": len(selected_matches),
             "source_pages_or_sections": [
-                {"page": section}
-                for section in source_sections
+                {"filename": source_filename, "page": section}
+                for source_filename, section in source_sections
             ],
             "retrieval_latency_ms": round(retrieval_latency_ms, 2),
             "reranking_latency_ms": round(reranking_latency_ms, 2),
@@ -1052,6 +1100,7 @@ def ask_question(request: QuestionRequest):
             result["retrieval_candidates"] = [
                 {
                     "retrieval_rank": rank,
+                    "filename": doc.metadata.get("source", request.filename),
                     "page": doc.metadata.get("page", 0) + 1,
                     "text": doc.page_content,
                     "distance": (
