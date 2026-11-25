@@ -45,7 +45,7 @@ if not st.session_state.documents:
 
 
 st.title("CourseMate AI")
-st.caption("Your personal AI study assistant")
+st.caption("Your personal AI study assistant — questions search across all uploaded study materials.")
 
 with st.sidebar:
     st.header("Study materials")
@@ -243,6 +243,7 @@ else:
                         f"{API_URL}/ask",
                         json={
                             "filename": filename,
+                            "filenames": st.session_state.documents,
                             "question": question,
                             "conversation_id": st.session_state.conversation_ids.get(filename),
                             # The current question was just appended above.
@@ -270,7 +271,7 @@ else:
                         )
 
                         sources = [
-                            f"Page or section {source['page']}"
+                            f"{source.get('filename', filename)} — page/section {source['page']}"
                             for source in result.get(
                                 "source_pages_or_sections", []
                             )
